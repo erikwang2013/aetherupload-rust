@@ -2,7 +2,7 @@
 
 [package]
 name = "aetherupload-rust"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 rust-version = "1.89"
 description = "AetherUpload for Rust：前端切片、后端追加落盘 —— 上传 / 断线续传 / 秒传 / 去重 / 完整性校验共用同一套机制；内核与宿主框架解耦（原生 Guard + Axum、Actix Web、Rocket、Poem、Salvo、Warp、bee-rust、e-cat），默认 feature 零第三方依赖"
@@ -56,7 +56,9 @@ actix-web = { version = "4.15", optional = true, default-features = false }
 multer = { version = "3.1", optional = true, default-features = false }
 futures-util = { version = "0.3", optional = true, default-features = false, features = ["std"] }
 rocket = { version = "0.5.1", optional = true, default-features = false }  # TempFile 随 rocket 一起提供，无需额外 feature
-poem = { version = "3.1.12", optional = true, default-features = false, features = ["multipart"] }
+# poem 不能裁默认 feature：其自身的 addr.rs 在 unix 上需要 tokio/net，
+# 裁掉会让 poem 自己编译失败（单 feature 构建下必现）
+poem = { version = "3.1.12", optional = true, features = ["multipart"] }
 salvo = { version = "1.0.1", optional = true, default-features = false }  # FormData 与 fs::NamedFile 都在 salvo_core 里，无 feature 门控
 warp = { version = "0.4.3", optional = true, default-features = false, features = ["multipart"] }  # warp::fs 无 feature 门控，唯一要开的是 multipart
 bee_router = { version = "1.2.3", optional = true, default-features = false }

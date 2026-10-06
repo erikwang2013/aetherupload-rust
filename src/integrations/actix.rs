@@ -123,7 +123,11 @@ async fn parse_multipart(
     let boundary = parse_boundary(content_type).map_err(|err| err.to_string())?;
     let body = read_body(payload, limit).await?;
 
-    let mut multipart = Multipart::with_reader(std::io::Cursor::new(body), boundary);
+    // 用 `Multipart::new` 而不是 `with_reader`：后者要 multer 的 `tokio-io` feature
+    // （全量构建时被 poem/warp/axum 的依赖统一打开，单 feature 构建下没有 → CI 的单
+    // feature 检查会挂）。体已经整条收进内存，包成单元素流即可，行为等价。
+    let stream = futures_util::stream::once(async move { Ok::<_, std::io::Error>(body) });
+    let mut multipart = Multipart::new(stream, boundary);
     let mut form = FormData::new();
 
     while let Some(field) = multipart
