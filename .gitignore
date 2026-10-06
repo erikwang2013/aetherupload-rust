@@ -1,0 +1,21 @@
+# Ruflo local secrets and runtime data
+.env
+.env.local
+.env.*.local
+.claude-flow/data/
+.claude-flow/logs/
+.claude-flow/sessions/
+
+# Codex local configuration
+.codex/
+# Claude Flow runtime data（本地脚手架，不随仓库提交）
+.claude/
+.claude-flow/
+.swarm/
+.agents/
+.mcp.json
+ruvector.db
+
+# Rust
+/target
+Cargo.lock

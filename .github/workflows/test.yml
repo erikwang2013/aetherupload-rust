@@ -1,0 +1,82 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy（全部 feature，告警即失败）
+        run: cargo clippy --all-features --all-targets -- -D warnings
+
+      - name: Check（逐个 feature：单个适配器可独立编译）
+        run: |
+          for f in axum actix rocket poem salvo warp bee-rust ecat s3; do
+            echo "::group::feature $f"
+            cargo check --no-default-features --features "$f"
+            echo "::endgroup::"
+          done
+
+      - name: Test（全部 feature：内核单测 + 协议端到端 + 原生 Guard + 八框架 + S3）
+        run: cargo test --all-features
+
+      - name: Test（默认 feature：零依赖内核）
+        run: cargo test --no-default-features
+
+      - name: 零依赖内核断言（默认 feature 下不允许出现任何第三方依赖）
+        run: |
+          cargo tree --no-default-features --edges normal | tail -n +2 | tee /tmp/tree.txt
+          if grep -qE '^[│├└ ]*[a-z0-9_-]+ v' /tmp/tree.txt; then
+            echo "::error::默认 feature 下出现了第三方依赖："
+            cat /tmp/tree.txt
+            exit 1
+          fi
+
+  msrv:
+    name: MSRV 1.89（零依赖内核）
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Rust 1.89
+        uses: dtolnay/rust-toolchain@1.89
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check 零依赖内核
+        run: cargo check --no-default-features
+
+  msrv-all-features:
+    name: MSRV 1.94（--all-features，以 Salvo 为准）
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Rust 1.94
+        uses: dtolnay/rust-toolchain@1.94
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check 全部 feature
+        run: cargo check --all-features

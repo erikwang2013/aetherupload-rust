@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8"/>
+    <title>AetherUpload 示例页</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <link rel="icon" type="image/svg+xml" href="/aetherupload-assets/pet.svg"/>
+    <style>
+        :root { color-scheme: dark; }
+        body {
+            margin: 0; padding: 40px 20px;
+            background: #0b1120; color: #dbe4ff;
+            font: 15px/1.7 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        }
+        .card {
+            max-width: 720px; margin: 0 auto; padding: 28px 32px;
+            background: #141d33; border: 1px solid #24304f; border-radius: 16px;
+        }
+        h1 { display: flex; align-items: center; gap: 12px; font-size: 20px; margin: 0 0 4px; }
+        h1 img { width: 48px; height: 48px; }
+        .sub { color: #7f8db3; font-size: 13px; margin-bottom: 24px; }
+        label { display: block; margin: 18px 0 6px; color: #9fb0d9; font-size: 13px; }
+        input[type=file] {
+            width: 100%; padding: 10px; border-radius: 10px;
+            border: 1px dashed #35507f; background: #0f1729; color: #cbd6f5;
+        }
+        input[type=text] {
+            width: 100%; padding: 10px; border-radius: 10px;
+            border: 1px solid #24304f; background: #0f1729; color: #cbd6f5;
+        }
+        button {
+            margin-top: 20px; padding: 10px 22px; border: 0; border-radius: 10px;
+            background: linear-gradient(135deg, #22e0b0, #35d0ff); color: #06202b;
+            font-size: 15px; font-weight: 600; cursor: pointer;
+        }
+        #aetherupload-output { margin-top: 16px; color: #7fd8ff; min-height: 24px; }
+        .hint { margin-top: 24px; padding-top: 16px; border-top: 1px solid #24304f; color: #7f8db3; font-size: 13px; }
+        code { color: #8fe6ff; }
+    </style>
+</head>
+<body>
+<div class="card">
+    <h1><img src="/aetherupload-assets/pet.svg" alt="以太兽"/>AetherUpload 示例页</h1>
+    <div class="sub">以太兽 · Aether Beast —— 头顶箭头是整份文件，腹部进度条是正在追加的分块</div>
+
+    <form method="post" action="/">
+        <label>选择要上传的文件（选完立即开始分块上传）</label>
+        <!--
+          需要一个 id 为 aetherupload-resource 的文件节点；
+          setGroup(...)            指定分组（必须已在配置里存在，且不含下划线）
+          setSavedPathField(...)   上传成功后把 savedPath 自动填进的节点
+          setPreprocessRoute(...)  预处理路由（与配置 route_preprocess 一致）
+          setUploadingRoute(...)   分块路由（与配置 route_uploading 一致）
+          setLaxMode(...)          宽松模式：跳过 hash 计算，代价是没有秒传与完整性校验
+        -->
+        <input type="file" id="aetherupload-resource"
+               onchange="aetherupload(this)
+                   .setGroup('file')
+                   .setSavedPathField('#aetherupload-savedpath')
+                   .setPreprocessRoute('/aetherupload/preprocess')
+                   .setUploadingRoute('/aetherupload/uploading')
+                   .setLaxMode(false)
+                   .upload()"/>
+        <div id="aetherupload-output"></div>
+
+        <label>已上传资源的保存路径（savedPath）</label>
+        <input type="text" name="file1" id="aetherupload-savedpath" readonly
+               placeholder="上传完成后自动填充"/>
+
+        <button type="submit">提交表单（把 savedPath 发给服务端）</button>
+    </form>
+
+    <div class="hint">
+        拿到 savedPath 之后：<br/>
+        访问 <code>/aetherupload/display/&lt;savedPath&gt;</code> 展示资源<br/>
+        下载 <code>/aetherupload/download/&lt;savedPath&gt;/新名字</code>
+    </div>
+</div>
+
+<!-- 单文件引入：已包含 aetherupload-core.js + zepto + spark-md5 -->
+<script src="/aetherupload-assets/aetherupload-all.js"></script>
+</body>
+</html>

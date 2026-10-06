@@ -1,0 +1,92 @@
+name: Auto Release
+
+# 推送 main 后自动打 tag 并发 release（发行方式对标 erikwang2013/hashids）。
+#
+# 版本递增按「自上一个 tag 以来的提交信息」决定，多提交取最高一级：
+#
+#   major  标题形如 `feat!:` / `fix(scope)!:`，或标题含「破坏性 / 不兼容」，
+#          或提交正文某行行首为 `BREAKING CHANGE:` / `BREAKING-CHANGE:`
+#   minor  标题形如 `feat:` / `feat(scope):`，或标题含「新增 / 新功能 / 特性」
+#   patch  其余一律 patch（fix / 修复 / 更新 / 移除 / 文档 / 杂项…）
+#
+# 例：`新增多连接支持` → v1.2.0 ｜ `修复默认连接回退` → v1.1.1 ｜ `feat!: 移除旧 API` → v2.0.0
+#
+# 注意：破坏性标记**只看标题 + 正文行首的英文 footer**，不看正文里的中文词。
+#
+# 发布到 crates.io 时，需保证 Cargo.toml 的 version 与该 tag 一致。
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check existing tag on HEAD
+        id: check
+        run: |
+          if [ -n "$(git tag --points-at HEAD)" ]; then
+            echo "HEAD already tagged, skipping release"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bump version
+        if: steps.check.outputs.skip == 'false'
+        id: version
+        run: |
+          latest=$(git tag -l 'v*' --sort=-v:refname | head -1 || true)
+          if [ -z "$latest" ]; then
+            new_tag="v0.1.0"
+          else
+            base=${latest#v}
+            IFS='.' read -r major minor patch <<< "$base"
+
+            subjects=$(git log --format=%s "$latest..HEAD" 2>/dev/null || true)
+            body=$(git log --format=%B "$latest..HEAD" 2>/dev/null || true)
+
+            if grep -qE '^[a-zA-Z]+(\([^)]*\))?!:' <<< "$subjects" \
+               || grep -qE '破坏性|不兼容' <<< "$subjects" \
+               || grep -qE '^BREAKING[ -]CHANGE:' <<< "$body"; then
+              major=$((major + 1)); minor=0; patch=0
+            elif grep -qE '(^|[[:space:]])(feat|feature)(\([^)]*\))?:' <<< "$subjects" \
+                 || grep -qE '新增|新功能|特性' <<< "$subjects"; then
+              minor=$((minor + 1)); patch=0
+            else
+              patch=$((patch + 1))
+            fi
+
+            new_tag="v${major}.${minor}.${patch}"
+          fi
+          echo "从 ${latest:-（无 tag）} 递增到 $new_tag"
+          echo "tag=$new_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push tag
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ steps.version.outputs.tag }}"
+          git push origin "${{ steps.version.outputs.tag }}"
+
+      - name: Create release
+        if: steps.check.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" --generate-notes

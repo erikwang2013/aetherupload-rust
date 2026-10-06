@@ -1,0 +1,126 @@
+# Copyright (c) 2026 erik <erik@erik.xyz> — https://erik.xyz
+
+[package]
+name = "aetherupload-rust"
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.89"
+description = "AetherUpload for Rust：前端切片、后端追加落盘 —— 上传 / 断线续传 / 秒传 / 去重 / 完整性校验共用同一套机制；内核与宿主框架解耦（原生 Guard + Axum、Actix Web、Rocket、Poem、Salvo、Warp、bee-rust、e-cat），默认 feature 零第三方依赖"
+license = "MIT"
+authors = ["erik <erik@erik.xyz>"]
+homepage = "https://erik.xyz"
+repository = "https://github.com/erikwang2013/aetherupload-rust"
+readme = "README.md"
+keywords = ["upload", "chunked-upload", "resumable-upload", "aetherupload", "web"]
+categories = ["web-programming", "filesystem"]
+
+# 随包只发「读代码 / 用库」要用的东西。`docs/pet.svg` 绝不能排 —— src/pet.rs 用
+# include_str! 内联它，排掉就编译不过（cargo package 会当场报错，不会静默漏发）。
+exclude = [
+    "CLAUDE.md",   # 仓库的 agent 配置，与使用者无关
+    "AGENTS.md",
+    "ruvector.db",
+    ".swarm",
+    ".claude-flow",
+    ".agents",
+    ".codex",
+    ".mcp.json",
+]
+
+[lib]
+name = "aetherupload"
+
+[[bin]]
+name = "aetherupload"
+path = "src/bin/aetherupload/main.rs"
+
+[features]
+default = []
+# 八个宿主框架：每个只做接线（注册路由 / 翻译入参 / 翻译响应），内核不感知任何框架
+# 注意 bee 的 feature 名叫 `bee-rust`（与项目命名一致），crate 仍是 bee_router
+axum = ["dep:axum", "dep:tokio", "dep:tokio-util"]
+actix = ["dep:actix-web", "dep:multer", "dep:futures-util"]
+rocket = ["dep:rocket"]
+poem = ["dep:poem", "dep:tokio", "dep:tokio-util"]
+salvo = ["dep:salvo"]
+warp = ["dep:warp"]
+bee-rust = ["dep:bee_router", "axum"]
+ecat = ["axum"]
+# 可选对象存储（S3 兼容）：内置最小 SigV4 客户端
+s3 = ["dep:sha2", "dep:hmac"]
+
+[dependencies]
+axum = { version = "0.8.9", optional = true, default-features = false, features = ["multipart"] }
+actix-web = { version = "4.15", optional = true, default-features = false }
+# multipart 直接喂给底层解析器 multer（actix-multipart 只是它的封装），少一层依赖
+multer = { version = "3.1", optional = true, default-features = false }
+futures-util = { version = "0.3", optional = true, default-features = false, features = ["std"] }
+rocket = { version = "0.5.1", optional = true, default-features = false }  # TempFile 随 rocket 一起提供，无需额外 feature
+poem = { version = "3.1.12", optional = true, default-features = false, features = ["multipart"] }
+salvo = { version = "1.0.1", optional = true, default-features = false }  # FormData 与 fs::NamedFile 都在 salvo_core 里，无 feature 门控
+warp = { version = "0.4.3", optional = true, default-features = false, features = ["multipart"] }  # warp::fs 无 feature 门控，唯一要开的是 multipart
+bee_router = { version = "1.2.3", optional = true, default-features = false }
+tokio = { version = "1.53", optional = true, default-features = false, features = ["fs", "io-util"] }
+tokio-util = { version = "0.7", optional = true, default-features = false, features = ["io"] }
+sha2 = { version = "0.10", optional = true }
+hmac = { version = "0.12", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.53", features = ["macros", "rt-multi-thread"] }
+axum = "0.8.9"
+tower = { version = "0.5.3", features = ["util"] }
+actix-web = "4.15"
+rocket = "0.5.1"
+poem = { version = "3.1.12", features = ["test"] }
+salvo = { version = "1.0.1", features = ["test"] }
+warp = { version = "0.4.3", features = ["test"] }
+bee_router = "1.2.3"
+bee_cache = "1.2.3"
+bee_session = "1.2.3"
+bee_template = "1.2.3"
+
+[[example]]
+name = "quickstart"
+required-features = ["axum"]
+
+[[test]]
+name = "integration_axum"
+path = "tests/integrations/axum.rs"
+required-features = ["axum"]
+
+[[test]]
+name = "integration_actix"
+path = "tests/integrations/actix.rs"
+required-features = ["actix"]
+
+[[test]]
+name = "integration_rocket"
+path = "tests/integrations/rocket.rs"
+required-features = ["rocket"]
+
+[[test]]
+name = "integration_poem"
+path = "tests/integrations/poem.rs"
+required-features = ["poem"]
+
+[[test]]
+name = "integration_salvo"
+path = "tests/integrations/salvo.rs"
+required-features = ["salvo"]
+
+[[test]]
+name = "integration_warp"
+path = "tests/integrations/warp.rs"
+required-features = ["warp"]
+
+[[test]]
+name = "integration_bee_rust"
+path = "tests/integrations/bee_rust.rs"
+required-features = ["bee-rust"]
+
+[[test]]
+name = "integration_ecat"
+path = "tests/integrations/ecat.rs"
+required-features = ["ecat"]
+
+[profile.release]
