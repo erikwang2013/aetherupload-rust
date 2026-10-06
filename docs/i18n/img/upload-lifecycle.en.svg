@@ -1,0 +1,153 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 720" width="900" height="720" role="img"
+     aria-labelledby="lifeTitleEn lifeDescEn"
+     font-family="-apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" fill="#dbe4ff">
+  <title id="lifeTitleEn">Upload lifecycle — a four-step main path with two bypasses</title>
+  <desc id="lifeDescEn">Main path, four numbered nodes: 1 Preprocess (validate params and group, create the empty .part file with chunkIndex=0, check the instant-upload index), 2 Chunking loop (compare the resume state, incremental size check, append and write back chunkIndex), 3 Last-chunk checks (whole-file size, real MIME, whole-file md5 — on mismatch the whole upload is dropped), 4 Publish (rename to md5, dedup, write the instant index, delete the header file). Two bypasses: an instant-upload hit returns savedPath during preprocess without sending any chunk; an interruption returns an error but never cleans .part or the header, so the client re-sends the gap. The bottom bar explains when cleanup does happen: failed last-chunk validation, or aetherupload clean N reclaiming stale temp files by mtime.</desc>
+
+  <defs>
+    <linearGradient id="auAccent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#86e6ff"/>
+      <stop offset="0.5" stop-color="#62a7ff"/>
+      <stop offset="1" stop-color="#8f7cff"/>
+    </linearGradient>
+    <linearGradient id="auPetBody" gradientUnits="userSpaceOnUse" x1="0" y1="-36" x2="0" y2="20">
+      <stop offset="0" stop-color="#86e6ff"/>
+      <stop offset="0.45" stop-color="#62a7ff"/>
+      <stop offset="1" stop-color="#8f7cff"/>
+    </linearGradient>
+    <linearGradient id="auPetBar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#22e0b0"/>
+      <stop offset="1" stop-color="#35d0ff"/>
+    </linearGradient>
+    <marker id="auArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#4fd1ff"/>
+    </marker>
+    <marker id="auArrowViolet" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#8f7cff"/>
+    </marker>
+    <marker id="auArrowAmber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#ffc46b"/>
+    </marker>
+  </defs>
+
+  <rect width="900" height="720" fill="#0b1120"/>
+
+  <text x="40" y="50" font-size="20" font-weight="700">Upload Lifecycle</text>
+  <text x="40" y="74" font-size="12.5" fill="#7f8db3">Four-step main path · two bypasses — order taken from src/controller/upload.rs</text>
+
+  <!-- bypass 1: instant upload -->
+  <path d="M138 180 C138 112 762 112 762 178" stroke="#8f7cff" stroke-width="1.8" stroke-dasharray="7 6" fill="none" marker-end="url(#auArrowViolet)"/>
+  <text x="450" y="102" font-size="12.5" fill="#c9bcff" text-anchor="middle">Instant upload (bypass): not a single chunk is sent — preprocess returns savedPath</text>
+
+  <!-- main path: four nodes -->
+  <rect x="40" y="180" width="196" height="180" rx="14" fill="#141d33" stroke="#24304f"/>
+  <circle cx="68" cy="204" r="13" fill="url(#auAccent)"/>
+  <text x="68" y="208.5" font-size="13" font-weight="700" fill="#0b1120" text-anchor="middle">1</text>
+  <text x="90" y="210" font-size="13" font-weight="700">Preprocess</text>
+  <text x="90" y="226" font-size="10" fill="#7f8db3">(preprocess)</text>
+  <circle cx="62" cy="248" r="2.5" fill="#4fd1ff"/>
+  <text x="72" y="252" font-size="10.5">Validate params and group</text>
+  <text x="72" y="268" font-size="10.5">(underscore → reject)</text>
+  <circle cx="62" cy="284" r="2.5" fill="#4fd1ff"/>
+  <text x="72" y="288" font-size="10.5">Create empty .part file</text>
+  <text x="72" y="304" font-size="10.5">header chunkIndex = 0</text>
+  <circle cx="62" cy="320" r="2.5" fill="#4fd1ff"/>
+  <text x="72" y="324" font-size="10.5">Instant-upload check</text>
+  <text x="72" y="340" font-size="10.5">hit → return savedPath</text>
+
+  <path d="M238 263 L246 270 L238 277" stroke="#4fd1ff" stroke-width="1.8" fill="none"/>
+
+  <rect x="248" y="180" width="196" height="180" rx="14" fill="#141d33" stroke="#24304f"/>
+  <circle cx="276" cy="204" r="13" fill="url(#auAccent)"/>
+  <text x="276" y="208.5" font-size="13" font-weight="700" fill="#0b1120" text-anchor="middle">2</text>
+  <text x="298" y="210" font-size="13" font-weight="700">Chunking (loop)</text>
+  <text x="298" y="226" font-size="10" fill="#7f8db3">(saveChunk)</text>
+  <circle cx="270" cy="248" r="2.5" fill="#4fd1ff"/>
+  <text x="280" y="252" font-size="10.5">Stored-chunk compare</text>
+  <text x="280" y="268" font-size="10.5">(skip · gap → error)</text>
+  <circle cx="270" cy="284" r="2.5" fill="#4fd1ff"/>
+  <text x="280" y="288" font-size="10.5">Incremental size check</text>
+  <text x="280" y="304" font-size="10.5">(landed + this chunk)</text>
+  <circle cx="270" cy="320" r="2.5" fill="#4fd1ff"/>
+  <text x="280" y="324" font-size="10.5">Append → write back</text>
+  <text x="280" y="340" font-size="10.5">chunkIndex</text>
+
+  <path d="M446 263 L454 270 L446 277" stroke="#4fd1ff" stroke-width="1.8" fill="none"/>
+
+  <rect x="456" y="180" width="196" height="180" rx="14" fill="#141d33" stroke="#24304f"/>
+  <circle cx="484" cy="204" r="13" fill="url(#auAccent)"/>
+  <text x="484" y="208.5" font-size="13" font-weight="700" fill="#0b1120" text-anchor="middle">3</text>
+  <text x="506" y="210" font-size="13" font-weight="700">Last-chunk checks</text>
+  <text x="506" y="226" font-size="10" fill="#7f8db3">(chunk_total reached)</text>
+  <circle cx="478" cy="248" r="2.5" fill="#4fd1ff"/>
+  <text x="488" y="252" font-size="10.5">Whole-file size check</text>
+  <circle cx="478" cy="280" r="2.5" fill="#4fd1ff"/>
+  <text x="488" y="284" font-size="10.5">Real MIME check (magic)</text>
+  <circle cx="478" cy="312" r="2.5" fill="#4fd1ff"/>
+  <text x="488" y="316" font-size="10.5">md5 vs declared hash</text>
+  <circle cx="478" cy="344" r="2.5" fill="#ffc46b"/>
+  <text x="488" y="348" font-size="10.5" fill="#ffc46b">Mismatch → drop all</text>
+
+  <path d="M654 263 L662 270 L654 277" stroke="#4fd1ff" stroke-width="1.8" fill="none"/>
+
+  <rect x="664" y="180" width="196" height="180" rx="14" fill="#141d33" stroke="#24304f"/>
+  <circle cx="692" cy="204" r="13" fill="url(#auAccent)"/>
+  <text x="692" y="208.5" font-size="13" font-weight="700" fill="#0b1120" text-anchor="middle">4</text>
+  <text x="714" y="210" font-size="13" font-weight="700">Publish</text>
+  <text x="714" y="226" font-size="10" fill="#7f8db3">(rename into place)</text>
+  <circle cx="686" cy="248" r="2.5" fill="#4fd1ff"/>
+  <text x="696" y="252" font-size="10.5">Rename to &lt;md5&gt;.&lt;ext&gt;</text>
+  <circle cx="686" cy="280" r="2.5" fill="#4fd1ff"/>
+  <text x="696" y="284" font-size="10.5">Same hash → dedup, drop</text>
+  <circle cx="686" cy="312" r="2.5" fill="#4fd1ff"/>
+  <text x="696" y="316" font-size="10.5">Write instant index</text>
+  <circle cx="686" cy="344" r="2.5" fill="#4fd1ff"/>
+  <text x="696" y="348" font-size="10.5">Delete header, fire event</text>
+
+  <!-- bypass 2: interruption and resume -->
+  <rect x="110" y="390" width="370" height="150" rx="14" fill="#141d33" stroke="#8f7cff" stroke-dasharray="7 5"/>
+  <text x="126" y="416" font-size="12.5" font-weight="700" fill="#c9bcff">Interrupted &amp; resume (bypass)</text>
+  <text x="126" y="444" font-size="11" fill="#b9c6ea">Invalid chunk / index gap → an error</text>
+  <text x="126" y="464" font-size="11" fill="#b9c6ea">is returned, but nothing is cleaned:</text>
+  <text x="126" y="484" font-size="11" fill="#b9c6ea">.part and _header stay on disk —</text>
+  <text x="126" y="504" font-size="11" fill="#b9c6ea">the client re-sends and continues</text>
+  <text x="126" y="524" font-size="11" fill="#7f8db3">(a re-sent chunk is skipped)</text>
+
+  <path d="M290 390 V362" stroke="#8f7cff" stroke-width="1.8" stroke-dasharray="5 4" fill="none" marker-end="url(#auArrowViolet)"/>
+  <path d="M402 362 V388" stroke="#8f7cff" stroke-width="1.8" stroke-dasharray="5 4" fill="none" marker-end="url(#auArrowViolet)"/>
+
+  <!-- after publish: the pet with a full progress bar -->
+  <path d="M762 360 V388" stroke="#4fd1ff" stroke-width="1.8" fill="none" marker-end="url(#auArrow)"/>
+  <rect x="664" y="390" width="196" height="150" rx="14" fill="#141d33" stroke="#2f3f66"/>
+  <circle cx="690" cy="412" r="10" fill="#22e0b0"/>
+  <path d="M685 412 l4 4 l7 -9" stroke="#0b1120" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="708" y="417" font-size="12.5" font-weight="700">Done</text>
+
+  <!-- aether-beast-pet: simplified aether beast (cloud body + upload arrow + full belly progress bar) -->
+  <g transform="translate(762,472) scale(0.95)">
+    <path d="M0 -33 V-45 M-5 -40 L0 -46 L5 -40" fill="none" stroke="#8fe6ff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>
+    <g fill="url(#auPetBody)">
+      <circle cx="0" cy="-2" r="21"/>
+      <circle cx="-15" cy="-8" r="12"/>
+      <circle cx="15" cy="-8" r="12"/>
+      <circle cx="0" cy="-19" r="13"/>
+    </g>
+    <g fill="#0d1b34">
+      <ellipse cx="-6.5" cy="-8" rx="3" ry="3.9"/>
+      <ellipse cx="6.5" cy="-8" rx="3" ry="3.9"/>
+    </g>
+    <path d="M-5 -1 q 5 5 10 0" fill="none" stroke="#0d1b34" stroke-width="2.2" stroke-linecap="round"/>
+    <rect x="-17" y="6" width="34" height="6" rx="3" fill="#0d1b34" opacity="0.25"/>
+    <rect x="-17" y="6" width="34" height="6" rx="3" fill="url(#auPetBar)"/>
+  </g>
+  <text x="762" y="516" font-size="11" fill="#7f8db3" text-anchor="middle">fully on disk · bar full</text>
+
+  <!-- bottom right: when is anything cleaned up -->
+  <path d="M554 360 V558" stroke="#ffc46b" stroke-width="1.8" stroke-dasharray="7 6" fill="none" marker-end="url(#auArrowAmber)"/>
+  <rect x="110" y="560" width="750" height="120" rx="14" fill="#141d33" stroke="#24304f"/>
+  <text x="130" y="588" font-size="13" font-weight="700">When does cleanup ever happen?</text>
+  <text x="130" y="618" font-size="11.5">1. Last-chunk validation fails → the whole upload is dropped (.part and header removed together)</text>
+  <text x="130" y="646" font-size="11.5">2. aetherupload clean N → reclaim stale temp files by mtime (suggested as a daily cron)</text>
+  <!-- 版权角标：全图统一 © erik.xyz -->
+  <text x="884" y="706" text-anchor="end" font-family="-apple-system, 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" fill="#7f8db3" opacity="0.85">© erik.xyz</text>
+</svg>

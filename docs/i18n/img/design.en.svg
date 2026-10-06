@@ -1,0 +1,135 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 640" width="900" height="640" role="img"
+     aria-labelledby="designTitleEn designDescEn"
+     font-family="-apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" fill="#dbe4ff">
+  <title id="designTitleEn">Design — one mechanism solves three hard problems</title>
+  <desc id="designDescEn">Top: three hard problems side by side (a file over the server body limit cannot be sent, a dropped connection starts everything over, the same file gets transferred again and again). Middle: all three converge into one core mechanism — slice in the browser, append chunk by chunk to a temp file, name the published file by its content md5. Bottom: upload, resume, instant upload, dedup and integrity all grow out of that one mechanism. Right column: three design constraints — never read the whole file into memory; no table of where a file lives (savedPath is stateless); Redis and S3 are both optional.</desc>
+
+  <defs>
+    <linearGradient id="auPetBody" gradientUnits="userSpaceOnUse" x1="0" y1="-36" x2="0" y2="20">
+      <stop offset="0" stop-color="#86e6ff"/>
+      <stop offset="0.45" stop-color="#62a7ff"/>
+      <stop offset="1" stop-color="#8f7cff"/>
+    </linearGradient>
+    <linearGradient id="auPetBar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#22e0b0"/>
+      <stop offset="1" stop-color="#35d0ff"/>
+    </linearGradient>
+    <marker id="auArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#4fd1ff"/>
+    </marker>
+  </defs>
+
+  <rect width="900" height="640" fill="#0b1120"/>
+
+  <text x="40" y="50" font-size="20" font-weight="700">Design</text>
+  <text x="40" y="74" font-size="12.5" fill="#7f8db3">One mechanism solves three hard problems — upload, resume, instant upload, dedup, integrity</text>
+
+  <!-- three hard problems -->
+  <g>
+    <rect x="40" y="92" width="240" height="96" rx="14" fill="#141d33" stroke="#24304f"/>
+    <circle cx="68" cy="118" r="12" fill="#1b2742" stroke="#3b4a75"/>
+    <text x="68" y="122.5" font-size="12" font-weight="700" fill="#86e6ff" text-anchor="middle">1</text>
+    <text x="90" y="123" font-size="13" font-weight="700">Over the body limit</text>
+    <text x="64" y="150" font-size="11.5" fill="#7f8db3">Whole file posted in one go</text>
+    <text x="64" y="170" font-size="11.5" fill="#7f8db3">rejected by the server, always</text>
+  </g>
+  <g>
+    <rect x="330" y="92" width="240" height="96" rx="14" fill="#141d33" stroke="#24304f"/>
+    <circle cx="358" cy="118" r="12" fill="#1b2742" stroke="#3b4a75"/>
+    <text x="358" y="122.5" font-size="12" font-weight="700" fill="#86e6ff" text-anchor="middle">2</text>
+    <text x="380" y="123" font-size="13" font-weight="700">Drop → start over</text>
+    <text x="354" y="150" font-size="11.5" fill="#7f8db3">everything already sent is lost</text>
+    <text x="354" y="170" font-size="11.5" fill="#7f8db3">retry begins at chunk zero</text>
+  </g>
+  <g>
+    <rect x="620" y="92" width="240" height="96" rx="14" fill="#141d33" stroke="#24304f"/>
+    <circle cx="648" cy="118" r="12" fill="#1b2742" stroke="#3b4a75"/>
+    <text x="648" y="122.5" font-size="12" font-weight="700" fill="#86e6ff" text-anchor="middle">3</text>
+    <text x="670" y="123" font-size="13" font-weight="700">Same file sent again</text>
+    <text x="644" y="150" font-size="11.5" fill="#7f8db3">duplicate copies cost bandwidth</text>
+    <text x="644" y="170" font-size="11.5" fill="#7f8db3">and disk space, over and over</text>
+  </g>
+
+  <!-- converge into the core mechanism -->
+  <path d="M160 188 C160 215 300 215 345 230" stroke="#4fd1ff" stroke-width="1.8" fill="none" marker-end="url(#auArrow)"/>
+  <path d="M450 188 V230" stroke="#4fd1ff" stroke-width="1.8" fill="none" marker-end="url(#auArrow)"/>
+  <path d="M740 188 C740 215 610 215 560 230" stroke="#4fd1ff" stroke-width="1.8" fill="none" marker-end="url(#auArrow)"/>
+
+  <rect x="40" y="232" width="580" height="88" rx="16" fill="#141d33" stroke="#2f3f66"/>
+
+  <!-- aether-beast-pet: simplified aether beast (cloud body + upload arrow + belly progress bar) -->
+  <g transform="translate(108,284) scale(0.85)">
+    <path d="M0 -33 V-45 M-5 -40 L0 -46 L5 -40" fill="none" stroke="#8fe6ff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>
+    <g fill="url(#auPetBody)">
+      <circle cx="0" cy="-2" r="21"/>
+      <circle cx="-15" cy="-8" r="12"/>
+      <circle cx="15" cy="-8" r="12"/>
+      <circle cx="0" cy="-19" r="13"/>
+    </g>
+    <g fill="#0d1b34">
+      <ellipse cx="-6.5" cy="-8" rx="3" ry="3.9"/>
+      <ellipse cx="6.5" cy="-8" rx="3" ry="3.9"/>
+    </g>
+    <path d="M-5 -1 q 5 5 10 0" fill="none" stroke="#0d1b34" stroke-width="2.2" stroke-linecap="round"/>
+    <rect x="-17" y="6" width="34" height="6" rx="3" fill="#0d1b34" opacity="0.25"/>
+    <rect x="-17" y="6" width="26" height="6" rx="3" fill="url(#auPetBar)"/>
+  </g>
+
+  <text x="168" y="268" font-size="14" font-weight="700">Core mechanism</text>
+  <text x="168" y="296" font-size="12.5">slice in the browser → append chunk by chunk to a temp file → name by content <tspan fill="#86e6ff" font-weight="600">md5</tspan></text>
+
+  <!-- design constraints (right column) -->
+  <rect x="656" y="232" width="204" height="64" rx="12" fill="#141d33" stroke="#24304f"/>
+  <circle cx="676" cy="256" r="9" fill="#1b2742" stroke="#3b4a75"/>
+  <text x="676" y="259.5" font-size="10.5" font-weight="700" fill="#86e6ff" text-anchor="middle">1</text>
+  <text x="694" y="260" font-size="12" font-weight="700">No full file in memory</text>
+  <text x="672" y="282" font-size="10.5" fill="#7f8db3">chunk append · streaming md5</text>
+
+  <rect x="656" y="306" width="204" height="64" rx="12" fill="#141d33" stroke="#24304f"/>
+  <circle cx="676" cy="330" r="9" fill="#1b2742" stroke="#3b4a75"/>
+  <text x="676" y="333.5" font-size="10.5" font-weight="700" fill="#86e6ff" text-anchor="middle">2</text>
+  <text x="694" y="334" font-size="12" font-weight="700">No file-location table</text>
+  <text x="672" y="356" font-size="10.5" fill="#7f8db3">savedPath is stateless</text>
+
+  <rect x="656" y="380" width="204" height="64" rx="12" fill="#141d33" stroke="#24304f"/>
+  <circle cx="676" cy="404" r="9" fill="#1b2742" stroke="#3b4a75"/>
+  <text x="676" y="407.5" font-size="10.5" font-weight="700" fill="#86e6ff" text-anchor="middle">3</text>
+  <text x="694" y="408" font-size="12" font-weight="700">Redis / S3 optional</text>
+  <text x="672" y="430" font-size="10.5" fill="#7f8db3">injected as traits</text>
+
+  <!-- five abilities grow out of the same mechanism -->
+  <path d="M330 320 V470" stroke="#4fd1ff" stroke-width="1.8" fill="none"/>
+  <path d="M117 470 H765" stroke="#4fd1ff" stroke-width="1.8" fill="none"/>
+  <path d="M117 470 V484" stroke="#4fd1ff" stroke-width="1.8" fill="none" marker-end="url(#auArrow)"/>
+  <path d="M279 470 V484" stroke="#4fd1ff" stroke-width="1.8" fill="none" marker-end="url(#auArrow)"/>
+  <path d="M441 470 V484" stroke="#4fd1ff" stroke-width="1.8" fill="none" marker-end="url(#auArrow)"/>
+  <path d="M603 470 V484" stroke="#4fd1ff" stroke-width="1.8" fill="none" marker-end="url(#auArrow)"/>
+  <path d="M765 470 V484" stroke="#4fd1ff" stroke-width="1.8" fill="none" marker-end="url(#auArrow)"/>
+
+  <rect x="40" y="486" width="154" height="114" rx="12" fill="#141d33" stroke="#24304f"/>
+  <text x="54" y="514" font-size="12.5" font-weight="700">Upload</text>
+  <text x="54" y="540" font-size="11" fill="#7f8db3">chunk by chunk,</text>
+  <text x="54" y="558" font-size="11" fill="#7f8db3">never fully buffered</text>
+
+  <rect x="202" y="486" width="154" height="114" rx="12" fill="#141d33" stroke="#24304f"/>
+  <text x="216" y="514" font-size="12.5" font-weight="700">Resume</text>
+  <text x="216" y="540" font-size="11" fill="#7f8db3">header keeps progress</text>
+  <text x="216" y="558" font-size="11" fill="#7f8db3">resume from the gap</text>
+
+  <rect x="364" y="486" width="154" height="114" rx="12" fill="#141d33" stroke="#24304f"/>
+  <text x="378" y="514" font-size="12.5" font-weight="700">Instant upload</text>
+  <text x="378" y="540" font-size="11" fill="#7f8db3">Redis index hit</text>
+  <text x="378" y="558" font-size="11" fill="#7f8db3">return savedPath</text>
+
+  <rect x="526" y="486" width="154" height="114" rx="12" fill="#141d33" stroke="#24304f"/>
+  <text x="540" y="514" font-size="12.5" font-weight="700">Dedup</text>
+  <text x="540" y="540" font-size="11" fill="#7f8db3">same md5, one copy</text>
+  <text x="540" y="558" font-size="11" fill="#7f8db3">duplicates dropped</text>
+
+  <rect x="688" y="486" width="154" height="114" rx="12" fill="#141d33" stroke="#24304f"/>
+  <text x="702" y="514" font-size="12.5" font-weight="700">Integrity</text>
+  <text x="702" y="540" font-size="11" fill="#7f8db3">whole-file md5 check</text>
+  <text x="702" y="558" font-size="11" fill="#7f8db3">drop all on mismatch</text>
+  <!-- 版权角标：全图统一 © erik.xyz -->
+  <text x="884" y="626" text-anchor="end" font-family="-apple-system, 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" fill="#7f8db3" opacity="0.85">© erik.xyz</text>
+</svg>

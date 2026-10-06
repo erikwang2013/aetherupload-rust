@@ -1,0 +1,164 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 880" width="900" height="880" role="img"
+     aria-labelledby="reqTitle reqDesc"
+     font-family="-apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" fill="#dbe4ff">
+  <title id="reqTitle">请求周期 — 一次上传请求走哪几步</title>
+  <desc id="reqDesc">纵向主线：客户端 POST multipart → 路由分发（Guard::classify 或框架路由，四条路由）→ 参数校验 → 分组快照 Config::resolve_group → 分成两支：preprocess 做秒传判定并建 .part 与 chunkIndex=0 后返回 JSON；saveChunk 走断点比对、增量大小校验、追加、回写 chunkIndex，末块做大小、真实 MIME、整份 md5 校验后改名落盘、写秒传、删断点。右侧一列是 display / download 的读路径（s3 预签名 302、X-Accel-Redirect、本地流式，内联类型强制附件）。底部是响应形态：错误一律 HTTP 200 加 error 字段。</desc>
+
+  <defs>
+    <linearGradient id="auPetBody" gradientUnits="userSpaceOnUse" x1="0" y1="-36" x2="0" y2="20">
+      <stop offset="0" stop-color="#86e6ff"/>
+      <stop offset="0.45" stop-color="#62a7ff"/>
+      <stop offset="1" stop-color="#8f7cff"/>
+    </linearGradient>
+    <linearGradient id="auPetBar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#22e0b0"/>
+      <stop offset="1" stop-color="#35d0ff"/>
+    </linearGradient>
+    <marker id="auArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#4fd1ff"/>
+    </marker>
+  </defs>
+
+  <rect width="900" height="880" fill="#0b1120"/>
+
+  <text x="40" y="50" font-size="20" font-weight="700">请求周期</text>
+  <text x="40" y="74" font-size="12.5" fill="#7f8db3">一次请求走哪几步 · 节点名字与顺序取自 src/controller/*.rs</text>
+
+  <!-- aether-beast-pet: 简化版以太兽（云团身体 + 头顶上传箭头 + 腹部进度条） -->
+  <g transform="translate(800,70) scale(0.78)">
+    <path d="M0 -33 V-45 M-5 -40 L0 -46 L5 -40" fill="none" stroke="#8fe6ff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>
+    <g fill="url(#auPetBody)">
+      <circle cx="0" cy="-2" r="21"/>
+      <circle cx="-15" cy="-8" r="12"/>
+      <circle cx="15" cy="-8" r="12"/>
+      <circle cx="0" cy="-19" r="13"/>
+    </g>
+    <g fill="#0d1b34">
+      <ellipse cx="-6.5" cy="-8" rx="3" ry="3.9"/>
+      <ellipse cx="6.5" cy="-8" rx="3" ry="3.9"/>
+    </g>
+    <path d="M-5 -1 q 5 5 10 0" fill="none" stroke="#0d1b34" stroke-width="2.2" stroke-linecap="round"/>
+    <rect x="-17" y="6" width="34" height="6" rx="3" fill="#0d1b34" opacity="0.25"/>
+    <rect x="-17" y="6" width="18" height="6" rx="3" fill="url(#auPetBar)"/>
+  </g>
+
+  <!-- 主线上段：四条路由共用 -->
+  <rect x="40" y="100" width="580" height="40" rx="12" fill="#141d33" stroke="#24304f"/>
+  <text x="60" y="125" font-size="12.5">客户端 POST multipart —— 按 chunkSize 顺序逐块提交（aetherupload-all.js）</text>
+  <path d="M330 140 V156" stroke="#4fd1ff" stroke-width="1.8" fill="none" marker-end="url(#auArrow)"/>
+
+  <rect x="40" y="158" width="580" height="76" rx="12" fill="#141d33" stroke="#30406a"/>
+  <text x="60" y="182" font-size="13" font-weight="700">路由分发（Guard::classify / 框架路由）</text>
+  <text x="60" y="206" font-size="10.5" fill="#86e6ff">POST /aetherupload/preprocess · POST /aetherupload/uploading</text>
+  <text x="60" y="224" font-size="10" fill="#86e6ff">GET /aetherupload/display/{saved_path} · GET /aetherupload/download/{saved_path}/{new_name}</text>
+  <path d="M330 234 V250" stroke="#4fd1ff" stroke-width="1.8" fill="none" marker-end="url(#auArrow)"/>
+
+  <rect x="40" y="252" width="580" height="42" rx="12" fill="#141d33" stroke="#24304f"/>
+  <text x="60" y="278" font-size="12">参数校验：必填字段 · 路径分量白名单 · chunk_total ≤ 10000</text>
+  <path d="M330 294 V310" stroke="#4fd1ff" stroke-width="1.8" fill="none" marker-end="url(#auArrow)"/>
+
+  <rect x="40" y="312" width="580" height="42" rx="12" fill="#141d33" stroke="#24304f"/>
+  <text x="60" y="338" font-size="12">分组快照 Config::resolve_group（分组名含下划线即拒）</text>
+
+  <!-- 分支 -->
+  <path d="M330 354 V370" stroke="#4fd1ff" stroke-width="1.8" fill="none"/>
+  <path d="M175 370 H480" stroke="#4fd1ff" stroke-width="1.8" fill="none"/>
+  <path d="M175 370 V382" stroke="#4fd1ff" stroke-width="1.8" fill="none" marker-end="url(#auArrow)"/>
+  <path d="M480 370 V382" stroke="#4fd1ff" stroke-width="1.8" fill="none" marker-end="url(#auArrow)"/>
+
+  <rect x="40" y="384" width="270" height="36" rx="10" fill="#1b2742" stroke="#62a7ff"/>
+  <text x="56" y="407" font-size="12.5" font-weight="700">preprocess（POST）</text>
+  <rect x="340" y="384" width="280" height="36" rx="10" fill="#1b2742" stroke="#62a7ff"/>
+  <text x="356" y="407" font-size="12.5" font-weight="700">saveChunk（POST · 循环）</text>
+
+  <!-- 上支：preprocess -->
+  <rect x="40" y="430" width="270" height="46" rx="12" fill="#141d33" stroke="#24304f"/>
+  <text x="56" y="450" font-size="12">① 秒传判定</text>
+  <text x="56" y="468" font-size="11" fill="#7f8db3">命中 → 直接返回 savedPath</text>
+  <rect x="40" y="484" width="270" height="34" rx="12" fill="#141d33" stroke="#24304f"/>
+  <text x="56" y="506" font-size="11.5">② 建空 .part + chunkIndex = 0</text>
+  <rect x="40" y="526" width="270" height="62" rx="12" fill="#141d33" stroke="#24304f"/>
+  <text x="56" y="546" font-size="12">③ 返回 JSON</text>
+  <text x="56" y="564" font-size="11" fill="#7f8db3">chunkSize · resourceTempBaseName</text>
+  <text x="56" y="580" font-size="11" fill="#7f8db3">· groupSubDir</text>
+
+  <!-- 下支：saveChunk -->
+  <rect x="340" y="430" width="280" height="50" rx="12" fill="#141d33" stroke="#24304f"/>
+  <text x="356" y="450" font-size="12">断点比对（chunkIndex）</text>
+  <text x="356" y="468" font-size="11" fill="#7f8db3">重发幂等跳过 · 跳变报错且不清理</text>
+  <rect x="340" y="488" width="280" height="32" rx="12" fill="#141d33" stroke="#24304f"/>
+  <text x="356" y="509" font-size="11.5">增量大小校验（已落盘 + 本块）</text>
+  <rect x="340" y="526" width="280" height="32" rx="12" fill="#141d33" stroke="#24304f"/>
+  <text x="356" y="547" font-size="11.5">追加到 .part → 回写 chunkIndex</text>
+
+  <text x="480" y="576" font-size="11" fill="#4fd1ff" text-anchor="middle">—— 末块（chunk_index == chunk_total）——</text>
+
+  <rect x="340" y="592" width="280" height="32" rx="12" fill="#141d33" stroke="#24304f"/>
+  <text x="356" y="613" font-size="11">整份大小校验 → 真实 MIME 复核（魔数）</text>
+  <rect x="340" y="632" width="280" height="32" rx="12" fill="#141d33" stroke="#24304f"/>
+  <text x="356" y="653" font-size="11.5">整份 md5 与客户端声明比对</text>
+  <rect x="340" y="672" width="280" height="32" rx="12" fill="#141d33" stroke="#24304f"/>
+  <text x="356" y="693" font-size="11.5">改名落盘 &lt;md5&gt;.&lt;ext&gt;（同 hash 去重）</text>
+  <rect x="340" y="712" width="280" height="32" rx="12" fill="#141d33" stroke="#24304f"/>
+  <text x="356" y="733" font-size="11.5">写秒传索引 → 删断点文件，触发完成事件</text>
+
+  <!-- 右侧：读路径 -->
+  <rect x="644" y="110" width="216" height="44" rx="12" fill="#1b2742" stroke="#62a7ff"/>
+  <text x="660" y="130" font-size="12.5" font-weight="700">读路径</text>
+  <text x="660" y="146" font-size="10.5" fill="#9fb0d8">GET display / download</text>
+
+  <rect x="644" y="162" width="216" height="48" rx="12" fill="#141d33" stroke="#24304f"/>
+  <text x="660" y="182" font-size="11.5">SavedPath 三段式解码</text>
+  <text x="660" y="199" font-size="10.5" fill="#7f8db3">分组_子目录_文件名，逐段校验</text>
+
+  <rect x="644" y="218" width="216" height="48" rx="12" fill="#141d33" stroke="#24304f"/>
+  <text x="660" y="238" font-size="11.5">s3 驱动（storage.driver）</text>
+  <text x="660" y="255" font-size="10.5" fill="#7f8db3">302 → 预签名 URL</text>
+
+  <rect x="644" y="274" width="216" height="60" rx="12" fill="#141d33" stroke="#24304f"/>
+  <text x="660" y="294" font-size="11.5">x_accel_redirect = true</text>
+  <text x="660" y="311" font-size="10.5" fill="#7f8db3">→ X-Accel-Redirect</text>
+  <text x="660" y="328" font-size="10.5" fill="#7f8db3">交 nginx 直发（仅 local）</text>
+
+  <rect x="644" y="342" width="216" height="52" rx="12" fill="#141d33" stroke="#24304f"/>
+  <text x="660" y="362" font-size="11.5">默认：本地文件</text>
+  <text x="660" y="379" font-size="10.5" fill="#7f8db3">由宿主流式下发</text>
+
+  <rect x="644" y="402" width="216" height="60" rx="12" fill="#141d33" stroke="#24304f"/>
+  <text x="660" y="422" font-size="11.5">可内联类型强制附件</text>
+  <text x="660" y="439" font-size="10.5" fill="#7f8db3">svg / html / js + nosniff</text>
+  <text x="660" y="456" font-size="10.5" fill="#7f8db3">（防同源 XSS）</text>
+
+  <rect x="644" y="470" width="216" height="56" rx="12" fill="#0e1526" stroke="#3b4a75" stroke-dasharray="7 5"/>
+  <text x="660" y="490" font-size="11" fill="#7f8db3">失败 → 404</text>
+  <text x="660" y="507" font-size="10.5" fill="#7f8db3">「display fail」</text>
+  <text x="660" y="524" font-size="10.5" fill="#7f8db3">「download fail」</text>
+
+  <!-- 左下角：宠物与汇入响应 -->
+  <g transform="translate(250,655) scale(0.95)">
+    <path d="M0 -33 V-45 M-5 -40 L0 -46 L5 -40" fill="none" stroke="#8fe6ff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>
+    <g fill="url(#auPetBody)">
+      <circle cx="0" cy="-2" r="21"/>
+      <circle cx="-15" cy="-8" r="12"/>
+      <circle cx="15" cy="-8" r="12"/>
+      <circle cx="0" cy="-19" r="13"/>
+    </g>
+    <g fill="#0d1b34">
+      <ellipse cx="-6.5" cy="-8" rx="3" ry="3.9"/>
+      <ellipse cx="6.5" cy="-8" rx="3" ry="3.9"/>
+    </g>
+    <path d="M-5 -1 q 5 5 10 0" fill="none" stroke="#0d1b34" stroke-width="2.2" stroke-linecap="round"/>
+    <rect x="-17" y="6" width="34" height="6" rx="3" fill="#0d1b34" opacity="0.25"/>
+    <rect x="-17" y="6" width="22" height="6" rx="3" fill="url(#auPetBar)"/>
+  </g>
+
+  <path d="M175 588 V766" stroke="#4fd1ff" stroke-width="1.8" stroke-dasharray="6 6" fill="none" marker-end="url(#auArrow)"/>
+  <path d="M480 744 V766" stroke="#4fd1ff" stroke-width="1.8" fill="none" marker-end="url(#auArrow)"/>
+
+  <!-- 响应形态 -->
+  <rect x="40" y="770" width="820" height="76" rx="14" fill="#141d33" stroke="#30406a"/>
+  <text x="60" y="796" font-size="13" font-weight="700">响应形态</text>
+  <text x="60" y="818" font-size="12">{ "error": 0, … } —— 上传接口一律 HTTP 200，错误放在 error 字段（与 PHP 版一致）</text>
+  <!-- 版权角标：全图统一 © erik.xyz -->
+  <text x="884" y="866" text-anchor="end" font-family="-apple-system, 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" fill="#7f8db3" opacity="0.85">© erik.xyz</text>
+</svg>

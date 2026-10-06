@@ -1,0 +1,157 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 840" width="900" height="840" role="img"
+     aria-labelledby="archTitle archDesc"
+     font-family="-apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" fill="#dbe4ff">
+  <title id="archTitle">架构设计 — AetherUpload-Rust 四层单向依赖</title>
+  <desc id="archDesc">自上而下的四层单向依赖：客户端（aetherupload-all.js 做 md5、切片与断线重试）、框架适配层（Axum / Actix Web / Rocket / Poem / Salvo / Warp / bee-rust / e-cat 八个框架加原生 Rust Guard，只做接线）、用例层（UploadController 与 ResourceController）、领域层（PartialResource / Header / Resource / SavedPath / MimeType / Config）、端口层（Storage / InstantStore / EventSink / MimeDetector，trait 注入、可选，虚线框）；底部是磁盘上的三类文件以及可选的 Redis 与 S3 依赖。左侧箭头表示依赖方向自上而下。</desc>
+
+  <defs>
+    <linearGradient id="auAccent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#86e6ff"/>
+      <stop offset="0.5" stop-color="#62a7ff"/>
+      <stop offset="1" stop-color="#8f7cff"/>
+    </linearGradient>
+    <linearGradient id="auPetBody" gradientUnits="userSpaceOnUse" x1="0" y1="-36" x2="0" y2="20">
+      <stop offset="0" stop-color="#86e6ff"/>
+      <stop offset="0.45" stop-color="#62a7ff"/>
+      <stop offset="1" stop-color="#8f7cff"/>
+    </linearGradient>
+    <linearGradient id="auPetBar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#22e0b0"/>
+      <stop offset="1" stop-color="#35d0ff"/>
+    </linearGradient>
+    <marker id="auArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#4fd1ff"/>
+    </marker>
+  </defs>
+
+  <rect width="900" height="840" fill="#0b1120"/>
+
+  <text x="40" y="50" font-size="20" font-weight="700">架构设计</text>
+  <text x="40" y="74" font-size="12.5" fill="#7f8db3">四层单向依赖 · 上层依赖下层，反向不成立 · 内核不认识任何框架</text>
+
+  <!-- 依赖方向（自上而下） -->
+  <path d="M24 112 V644" stroke="#4fd1ff" stroke-width="1.5" stroke-dasharray="5 6" fill="none" marker-end="url(#auArrow)"/>
+  <text transform="rotate(90 12 378)" x="12" y="378" font-size="12" fill="#7f8db3" text-anchor="middle">依赖方向</text>
+
+  <!-- aether-beast-pet: 简化版以太兽（云团身体 + 头顶上传箭头 + 腹部进度条） -->
+  <g transform="translate(796,78) scale(0.85)">
+    <path d="M0 -33 V-45 M-5 -40 L0 -46 L5 -40" fill="none" stroke="#8fe6ff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>
+    <g fill="url(#auPetBody)">
+      <circle cx="0" cy="-2" r="21"/>
+      <circle cx="-15" cy="-8" r="12"/>
+      <circle cx="15" cy="-8" r="12"/>
+      <circle cx="0" cy="-19" r="13"/>
+    </g>
+    <g fill="#0d1b34">
+      <ellipse cx="-6.5" cy="-8" rx="3" ry="3.9"/>
+      <ellipse cx="6.5" cy="-8" rx="3" ry="3.9"/>
+    </g>
+    <path d="M-5 -1 q 5 5 10 0" fill="none" stroke="#0d1b34" stroke-width="2.2" stroke-linecap="round"/>
+    <rect x="-17" y="6" width="34" height="6" rx="3" fill="#0d1b34" opacity="0.25"/>
+    <rect x="-17" y="6" width="22" height="6" rx="3" fill="url(#auPetBar)"/>
+  </g>
+
+  <!-- ① 客户端 -->
+  <rect x="40" y="96" width="620" height="64" rx="14" fill="#141d33" stroke="#24304f"/>
+  <rect x="54" y="108" width="4" height="40" rx="2" fill="#86e6ff"/>
+  <text x="70" y="124" font-size="14" font-weight="700">客户端</text>
+  <text x="70" y="144" font-size="12.5">浏览器 <tspan fill="#86e6ff">aetherupload-all.js</tspan> —— 算 md5 · 切片 · 断线重试</text>
+  <path d="M350 162 V178" stroke="#4fd1ff" stroke-width="1.8" fill="none" marker-end="url(#auArrow)"/>
+
+  <!-- ② 框架适配层 -->
+  <rect x="40" y="180" width="620" height="128" rx="14" fill="#141d33" stroke="#24304f"/>
+  <rect x="54" y="192" width="4" height="104" rx="2" fill="#62a7ff"/>
+  <text x="70" y="206" font-size="14" font-weight="700">框架适配层 · src/integrations/（feature 门控）</text>
+  <g font-size="12" text-anchor="middle">
+    <rect x="70" y="214" width="74" height="30" rx="8" fill="#0f1729" stroke="#24304f"/>
+    <text x="107" y="234">Axum</text>
+    <rect x="154" y="214" width="74" height="30" rx="8" fill="#0f1729" stroke="#24304f"/>
+    <text x="191" y="234">Actix Web</text>
+    <rect x="238" y="214" width="74" height="30" rx="8" fill="#0f1729" stroke="#24304f"/>
+    <text x="275" y="234">Rocket</text>
+    <rect x="322" y="214" width="74" height="30" rx="8" fill="#0f1729" stroke="#24304f"/>
+    <text x="359" y="234">Poem</text>
+    <rect x="406" y="214" width="74" height="30" rx="8" fill="#0f1729" stroke="#24304f"/>
+    <text x="443" y="234">Salvo</text>
+    <rect x="70" y="252" width="74" height="30" rx="8" fill="#0f1729" stroke="#24304f"/>
+    <text x="107" y="272">Warp</text>
+    <rect x="154" y="252" width="74" height="30" rx="8" fill="#0f1729" stroke="#24304f"/>
+    <text x="191" y="272">bee-rust</text>
+    <rect x="238" y="252" width="74" height="30" rx="8" fill="#0f1729" stroke="#24304f"/>
+    <text x="275" y="272">e-cat</text>
+  </g>
+  <rect x="322" y="252" width="318" height="30" rx="8" fill="url(#auAccent)"/>
+  <text x="481" y="272" font-size="12.5" font-weight="700" fill="#0b1120" text-anchor="middle">原生 Rust · Guard 请求守卫</text>
+
+  <rect x="680" y="188" width="180" height="96" rx="12" fill="#141d33" stroke="#24304f"/>
+  <text x="696" y="212" font-size="12.5" font-weight="700" fill="#86e6ff">只做接线</text>
+  <text x="696" y="238" font-size="11.5" fill="#7f8db3">注册四条路由</text>
+  <text x="696" y="258" font-size="11.5" fill="#7f8db3">翻译 multipart 表单</text>
+  <text x="696" y="278" font-size="11.5" fill="#7f8db3">翻译内核响应</text>
+  <path d="M350 310 V326" stroke="#4fd1ff" stroke-width="1.8" fill="none" marker-end="url(#auArrow)"/>
+
+  <!-- ③ 用例层 -->
+  <rect x="40" y="328" width="620" height="84" rx="14" fill="#141d33" stroke="#24304f"/>
+  <rect x="54" y="340" width="4" height="60" rx="2" fill="#8f7cff"/>
+  <text x="70" y="354" font-size="14" font-weight="700">用例层 · src/controller/（两个入口）</text>
+  <rect x="70" y="364" width="278" height="34" rx="10" fill="#0f1729" stroke="#24304f"/>
+  <text x="82" y="386" font-size="10.5" fill="#b9c6ea">UploadController · preprocess / saveChunk</text>
+  <rect x="360" y="364" width="278" height="34" rx="10" fill="#0f1729" stroke="#24304f"/>
+  <text x="372" y="386" font-size="10.5" fill="#b9c6ea">ResourceController · display / download</text>
+  <path d="M350 414 V430" stroke="#4fd1ff" stroke-width="1.8" fill="none" marker-end="url(#auArrow)"/>
+
+  <!-- ④ 领域层 -->
+  <rect x="40" y="432" width="620" height="112" rx="14" fill="#141d33" stroke="#24304f"/>
+  <rect x="54" y="444" width="4" height="88" rx="2" fill="#35d0ff"/>
+  <text x="70" y="458" font-size="14" font-weight="700">领域层 · src/{partial,header,resource,saved_path,mime,config}.rs</text>
+  <g font-size="10.5" fill="#b9c6ea">
+    <rect x="70" y="466" width="186" height="32" rx="10" fill="#0f1729" stroke="#24304f"/>
+    <text x="82" y="487">PartialResource（.part 追加）</text>
+    <rect x="264" y="466" width="186" height="32" rx="10" fill="#0f1729" stroke="#24304f"/>
+    <text x="276" y="487">Header（chunkIndex）</text>
+    <rect x="458" y="466" width="186" height="32" rx="10" fill="#0f1729" stroke="#24304f"/>
+    <text x="470" y="487">Resource（成品）</text>
+    <rect x="70" y="502" width="186" height="32" rx="10" fill="#0f1729" stroke="#24304f"/>
+    <text x="82" y="523">SavedPath（三段式寻址）</text>
+    <rect x="264" y="502" width="186" height="32" rx="10" fill="#0f1729" stroke="#24304f"/>
+    <text x="276" y="523">MimeType（769 条表 + 魔数）</text>
+    <rect x="458" y="502" width="186" height="32" rx="10" fill="#0f1729" stroke="#24304f"/>
+    <text x="470" y="523">Config（分组快照）</text>
+  </g>
+  <path d="M350 546 V562" stroke="#4fd1ff" stroke-width="1.8" fill="none" marker-end="url(#auArrow)"/>
+
+  <!-- ⑤ 端口层（虚线：trait 注入，可选） -->
+  <rect x="40" y="564" width="620" height="88" rx="14" fill="#0e1526" stroke="#3b4a75" stroke-dasharray="7 5"/>
+  <text x="70" y="590" font-size="14" font-weight="700" fill="#9fb0d8">端口层 · trait 注入 · 可选</text>
+  <g font-size="10" fill="#b9c6ea">
+    <rect x="70" y="598" width="136" height="32" rx="10" fill="#0f1729" stroke="#24304f"/>
+    <text x="82" y="619">Storage（local / s3）</text>
+    <rect x="214" y="598" width="136" height="32" rx="10" fill="#0f1729" stroke="#24304f"/>
+    <text x="226" y="619">InstantStore（Redis）</text>
+    <rect x="358" y="598" width="136" height="32" rx="10" fill="#0f1729" stroke="#24304f"/>
+    <text x="370" y="619">EventSink（上传完成）</text>
+    <rect x="502" y="598" width="136" height="32" rx="10" fill="#0f1729" stroke="#24304f"/>
+    <text x="514" y="619">MimeDetector（魔数）</text>
+  </g>
+
+  <!-- 磁盘：三类文件 + 可选依赖 -->
+  <rect x="40" y="684" width="420" height="120" rx="14" fill="#141d33" stroke="#24304f"/>
+  <text x="60" y="712" font-size="13" font-weight="700">磁盘落盘 · 只有三类文件</text>
+  <text x="60" y="740" font-size="11.5"><tspan fill="#86e6ff" font-weight="600">&lt;md5&gt;.&lt;ext&gt;</tspan><tspan fill="#7f8db3">  成品（改名落盘）</tspan></text>
+  <text x="60" y="765" font-size="11.5"><tspan fill="#22e0b0" font-weight="600">*.part</tspan><tspan fill="#7f8db3">  分块（逐块追加）</tspan></text>
+  <text x="60" y="790" font-size="11.5"><tspan fill="#b9a8ff" font-weight="600">_header/&lt;临时名&gt;</tspan><tspan fill="#7f8db3">  断点（只存 chunkIndex）</tspan></text>
+
+  <rect x="480" y="684" width="180" height="120" rx="14" fill="#0e1526" stroke="#3b4a75" stroke-dasharray="7 5"/>
+  <text x="496" y="712" font-size="12.5" font-weight="700" fill="#86e6ff">Redis（可选）</text>
+  <text x="496" y="740" font-size="10.5" fill="#7f8db3">秒传索引 · 独立 TTL</text>
+  <text x="496" y="765" font-size="10.5" fill="#7f8db3">aetherupload:resource:</text>
+  <text x="496" y="790" font-size="10.5" fill="#7f8db3">&lt;分组&gt;_&lt;hash&gt;</text>
+
+  <rect x="680" y="684" width="180" height="120" rx="14" fill="#0e1526" stroke="#3b4a75" stroke-dasharray="7 5"/>
+  <text x="696" y="712" font-size="12.5" font-weight="700" fill="#86e6ff">S3（可选）</text>
+  <text x="696" y="740" font-size="10.5" fill="#7f8db3">storage.driver = s3</text>
+  <text x="696" y="765" font-size="10.5" fill="#7f8db3">成品落对象存储</text>
+  <text x="696" y="790" font-size="10.5" fill="#7f8db3">读路径 → 302 预签名</text>
+  <!-- 版权角标：全图统一 © erik.xyz -->
+  <text x="884" y="826" text-anchor="end" font-family="-apple-system, 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" fill="#7f8db3" opacity="0.85">© erik.xyz</text>
+</svg>

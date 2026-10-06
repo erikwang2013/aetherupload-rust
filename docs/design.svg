@@ -1,0 +1,135 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 640" width="900" height="640" role="img"
+     aria-labelledby="designTitle designDesc"
+     font-family="-apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" fill="#dbe4ff">
+  <title id="designTitle">功能设计 — 一套机制解决三个难题</title>
+  <desc id="designDesc">上半：三个难题并列（超过服务端请求体上限就传不上去、网络一断从头再来、同样的文件被反复传输）。中间：三个难题汇入同一个核心机制 —— 浏览器切片、逐块追加到临时文件、落盘时用内容 md5 命名。下半：上传、断线续传、秒传、去重、完整性校验五个能力从同一机制长出。右侧竖排三条设计约束：不把整份文件读进内存；不为「文件在哪」建表；Redis 与 S3 皆可选。</desc>
+
+  <defs>
+    <linearGradient id="auPetBody" gradientUnits="userSpaceOnUse" x1="0" y1="-36" x2="0" y2="20">
+      <stop offset="0" stop-color="#86e6ff"/>
+      <stop offset="0.45" stop-color="#62a7ff"/>
+      <stop offset="1" stop-color="#8f7cff"/>
+    </linearGradient>
+    <linearGradient id="auPetBar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#22e0b0"/>
+      <stop offset="1" stop-color="#35d0ff"/>
+    </linearGradient>
+    <marker id="auArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#4fd1ff"/>
+    </marker>
+  </defs>
+
+  <rect width="900" height="640" fill="#0b1120"/>
+
+  <text x="40" y="50" font-size="20" font-weight="700">功能设计</text>
+  <text x="40" y="74" font-size="12.5" fill="#7f8db3">一套机制解决三个难题 —— 上传 / 断线续传 / 秒传 / 去重 / 完整性校验共用同一套机制</text>
+
+  <!-- 三个难题 -->
+  <g>
+    <rect x="40" y="92" width="240" height="96" rx="14" fill="#141d33" stroke="#24304f"/>
+    <circle cx="68" cy="118" r="12" fill="#1b2742" stroke="#3b4a75"/>
+    <text x="68" y="122.5" font-size="12" font-weight="700" fill="#86e6ff" text-anchor="middle">1</text>
+    <text x="90" y="123" font-size="13" font-weight="700">超过请求体上限</text>
+    <text x="64" y="150" font-size="11.5" fill="#7f8db3">整份文件一次提交</text>
+    <text x="64" y="170" font-size="11.5" fill="#7f8db3">超过上限直接被服务端拒绝</text>
+  </g>
+  <g>
+    <rect x="330" y="92" width="240" height="96" rx="14" fill="#141d33" stroke="#24304f"/>
+    <circle cx="358" cy="118" r="12" fill="#1b2742" stroke="#3b4a75"/>
+    <text x="358" y="122.5" font-size="12" font-weight="700" fill="#86e6ff" text-anchor="middle">2</text>
+    <text x="380" y="123" font-size="13" font-weight="700">网络一断从头再来</text>
+    <text x="354" y="150" font-size="11.5" fill="#7f8db3">已传的部分全部作废</text>
+    <text x="354" y="170" font-size="11.5" fill="#7f8db3">网络恢复后只能从零重传</text>
+  </g>
+  <g>
+    <rect x="620" y="92" width="240" height="96" rx="14" fill="#141d33" stroke="#24304f"/>
+    <circle cx="648" cy="118" r="12" fill="#1b2742" stroke="#3b4a75"/>
+    <text x="648" y="122.5" font-size="12" font-weight="700" fill="#86e6ff" text-anchor="middle">3</text>
+    <text x="670" y="123" font-size="13" font-weight="700">同样的文件反复传输</text>
+    <text x="644" y="150" font-size="11.5" fill="#7f8db3">同内容被反复上传</text>
+    <text x="644" y="170" font-size="11.5" fill="#7f8db3">多份副本重复占用带宽</text>
+  </g>
+
+  <!-- 汇入核心机制 -->
+  <path d="M160 188 C160 215 300 215 345 230" stroke="#4fd1ff" stroke-width="1.8" fill="none" marker-end="url(#auArrow)"/>
+  <path d="M450 188 V230" stroke="#4fd1ff" stroke-width="1.8" fill="none" marker-end="url(#auArrow)"/>
+  <path d="M740 188 C740 215 610 215 560 230" stroke="#4fd1ff" stroke-width="1.8" fill="none" marker-end="url(#auArrow)"/>
+
+  <rect x="40" y="232" width="580" height="88" rx="16" fill="#141d33" stroke="#2f3f66"/>
+
+  <!-- aether-beast-pet: 简化版以太兽（云团身体 + 头顶上传箭头 + 腹部进度条） -->
+  <g transform="translate(108,284) scale(0.85)">
+    <path d="M0 -33 V-45 M-5 -40 L0 -46 L5 -40" fill="none" stroke="#8fe6ff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>
+    <g fill="url(#auPetBody)">
+      <circle cx="0" cy="-2" r="21"/>
+      <circle cx="-15" cy="-8" r="12"/>
+      <circle cx="15" cy="-8" r="12"/>
+      <circle cx="0" cy="-19" r="13"/>
+    </g>
+    <g fill="#0d1b34">
+      <ellipse cx="-6.5" cy="-8" rx="3" ry="3.9"/>
+      <ellipse cx="6.5" cy="-8" rx="3" ry="3.9"/>
+    </g>
+    <path d="M-5 -1 q 5 5 10 0" fill="none" stroke="#0d1b34" stroke-width="2.2" stroke-linecap="round"/>
+    <rect x="-17" y="6" width="34" height="6" rx="3" fill="#0d1b34" opacity="0.25"/>
+    <rect x="-17" y="6" width="26" height="6" rx="3" fill="url(#auPetBar)"/>
+  </g>
+
+  <text x="168" y="268" font-size="14" font-weight="700">核心机制</text>
+  <text x="168" y="296" font-size="12.5">浏览器切片 → 逐块追加到临时文件 → 落盘以内容 <tspan fill="#86e6ff" font-weight="600">md5</tspan> 命名</text>
+
+  <!-- 设计约束（右侧竖排三点） -->
+  <rect x="656" y="232" width="204" height="64" rx="12" fill="#141d33" stroke="#24304f"/>
+  <circle cx="676" cy="256" r="9" fill="#1b2742" stroke="#3b4a75"/>
+  <text x="676" y="259.5" font-size="10.5" font-weight="700" fill="#86e6ff" text-anchor="middle">1</text>
+  <text x="694" y="260" font-size="12" font-weight="700">不把整份文件读进内存</text>
+  <text x="672" y="282" font-size="10.5" fill="#7f8db3">分块追加 · 流式重算 md5</text>
+
+  <rect x="656" y="306" width="204" height="64" rx="12" fill="#141d33" stroke="#24304f"/>
+  <circle cx="676" cy="330" r="9" fill="#1b2742" stroke="#3b4a75"/>
+  <text x="676" y="333.5" font-size="10.5" font-weight="700" fill="#86e6ff" text-anchor="middle">2</text>
+  <text x="694" y="334" font-size="12" font-weight="700">不为「文件在哪」建表</text>
+  <text x="672" y="356" font-size="10.5" fill="#7f8db3">savedPath 无状态寻址</text>
+
+  <rect x="656" y="380" width="204" height="64" rx="12" fill="#141d33" stroke="#24304f"/>
+  <circle cx="676" cy="404" r="9" fill="#1b2742" stroke="#3b4a75"/>
+  <text x="676" y="407.5" font-size="10.5" font-weight="700" fill="#86e6ff" text-anchor="middle">3</text>
+  <text x="694" y="408" font-size="12" font-weight="700">Redis / S3 皆可选</text>
+  <text x="672" y="430" font-size="10.5" fill="#7f8db3">trait 注入 · 可选依赖</text>
+
+  <!-- 从核心机制长出五个能力 -->
+  <path d="M330 320 V470" stroke="#4fd1ff" stroke-width="1.8" fill="none"/>
+  <path d="M117 470 H765" stroke="#4fd1ff" stroke-width="1.8" fill="none"/>
+  <path d="M117 470 V484" stroke="#4fd1ff" stroke-width="1.8" fill="none" marker-end="url(#auArrow)"/>
+  <path d="M279 470 V484" stroke="#4fd1ff" stroke-width="1.8" fill="none" marker-end="url(#auArrow)"/>
+  <path d="M441 470 V484" stroke="#4fd1ff" stroke-width="1.8" fill="none" marker-end="url(#auArrow)"/>
+  <path d="M603 470 V484" stroke="#4fd1ff" stroke-width="1.8" fill="none" marker-end="url(#auArrow)"/>
+  <path d="M765 470 V484" stroke="#4fd1ff" stroke-width="1.8" fill="none" marker-end="url(#auArrow)"/>
+
+  <rect x="40" y="486" width="154" height="114" rx="12" fill="#141d33" stroke="#24304f"/>
+  <text x="54" y="514" font-size="12.5" font-weight="700">上传</text>
+  <text x="54" y="540" font-size="11" fill="#7f8db3">分块逐块追加</text>
+  <text x="54" y="558" font-size="11" fill="#7f8db3">不整份读入内存</text>
+
+  <rect x="202" y="486" width="154" height="114" rx="12" fill="#141d33" stroke="#24304f"/>
+  <text x="216" y="514" font-size="12.5" font-weight="700">断线续传</text>
+  <text x="216" y="540" font-size="11" fill="#7f8db3">断点文件记住进度</text>
+  <text x="216" y="558" font-size="11" fill="#7f8db3">从缺少的那块继续</text>
+
+  <rect x="364" y="486" width="154" height="114" rx="12" fill="#141d33" stroke="#24304f"/>
+  <text x="378" y="514" font-size="12.5" font-weight="700">秒传</text>
+  <text x="378" y="540" font-size="11" fill="#7f8db3">命中 Redis 索引</text>
+  <text x="378" y="558" font-size="11" fill="#7f8db3">直接返回 savedPath</text>
+
+  <rect x="526" y="486" width="154" height="114" rx="12" fill="#141d33" stroke="#24304f"/>
+  <text x="540" y="514" font-size="12.5" font-weight="700">去重</text>
+  <text x="540" y="540" font-size="11" fill="#7f8db3">同 md5 只存一份</text>
+  <text x="540" y="558" font-size="11" fill="#7f8db3">重复的直接丢弃</text>
+
+  <rect x="688" y="486" width="154" height="114" rx="12" fill="#141d33" stroke="#24304f"/>
+  <text x="702" y="514" font-size="12.5" font-weight="700">完整性校验</text>
+  <text x="702" y="540" font-size="11" fill="#7f8db3">末块比对整份 md5</text>
+  <text x="702" y="558" font-size="11" fill="#7f8db3">不一致整份丢弃</text>
+  <!-- 版权角标：全图统一 © erik.xyz -->
+  <text x="884" y="626" text-anchor="end" font-family="-apple-system, 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" fill="#7f8db3" opacity="0.85">© erik.xyz</text>
+</svg>

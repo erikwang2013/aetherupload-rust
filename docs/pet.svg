@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="240" height="240"
+     role="img" aria-labelledby="aetheruploadPetTitle aetheruploadPetDesc">
+  <title id="aetheruploadPetTitle">以太兽 — AetherUpload 项目宠物</title>
+  <desc id="aetheruploadPetDesc">一只云团状的以太兽：头顶向上的上传箭头，腹部一条进度条代表分块上传进度，
+  右侧一块带虚线拖尾的分块正在飞来。</desc>
+
+  <defs>
+    <!-- 深空底色：以太 -->
+    <linearGradient id="auBg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#141d33"/>
+      <stop offset="1" stop-color="#0b1120"/>
+    </linearGradient>
+
+    <!-- 身后的以太辉光 -->
+    <radialGradient id="auGlow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#4fd1ff" stop-opacity="0.26"/>
+      <stop offset="0.6" stop-color="#7c6cff" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#7c6cff" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- 体色：青 → 蓝 → 紫。userSpaceOnUse 让四个圆共享同一套渐变坐标，拼合处不会出现接缝 -->
+    <linearGradient id="auBody" gradientUnits="userSpaceOnUse" x1="120" y1="70" x2="120" y2="206">
+      <stop offset="0" stop-color="#86e6ff"/>
+      <stop offset="0.45" stop-color="#62a7ff"/>
+      <stop offset="1" stop-color="#8f7cff"/>
+    </linearGradient>
+
+    <!-- 分块各面 -->
+    <linearGradient id="auCubeTop" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#d7f6ff"/>
+      <stop offset="1" stop-color="#9fe4ff"/>
+    </linearGradient>
+
+    <linearGradient id="auBar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#22e0b0"/>
+      <stop offset="1" stop-color="#35d0ff"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="8" y="8" width="224" height="224" rx="46" fill="url(#auBg)"/>
+  <ellipse cx="120" cy="142" rx="96" ry="90" fill="url(#auGlow)"/>
+
+  <!-- 上传箭头（天线） -->
+  <g stroke="#8fe6ff" stroke-width="4" stroke-linecap="round" fill="none" opacity="0.88">
+    <path d="M120 70 V48"/>
+    <path d="M113 58 L120 49 L127 58" stroke-linejoin="round"/>
+  </g>
+
+  <!-- 身体：四个同色圆拼成云团 -->
+  <g fill="url(#auBody)">
+    <circle cx="120" cy="152" r="54"/>
+    <circle cx="80" cy="140" r="33"/>
+    <circle cx="160" cy="140" r="33"/>
+    <circle cx="120" cy="106" r="37"/>
+  </g>
+
+  <!-- 表情 -->
+  <g fill="#0d1b34">
+    <ellipse cx="100" cy="136" rx="7.5" ry="9.5"/>
+    <ellipse cx="140" cy="136" rx="7.5" ry="9.5"/>
+  </g>
+  <g fill="#ffffff" opacity="0.92">
+    <circle cx="97" cy="131.5" r="2.6"/>
+    <circle cx="137" cy="131.5" r="2.6"/>
+  </g>
+  <path d="M111 153 q 9 9 18 0" fill="none" stroke="#0d1b34" stroke-width="3.4" stroke-linecap="round"/>
+
+  <!-- 腹部进度条：待机时缓慢往复，读作"正在分块上传" -->
+  <rect x="90" y="172" width="60" height="11" rx="5.5" fill="#0d1b34" opacity="0.22"/>
+  <rect x="90" y="172" width="38" height="11" rx="5.5" fill="url(#auBar)">
+    <animate attributeName="width" values="34;46;34" dur="4.2s" repeatCount="indefinite"/>
+  </rect>
+
+  <!-- 正在飞来的分块（点线为传输轨迹，走云团上缘与右侧之间的空隙，不压身体） -->
+  <path d="M172 90 q -9 5 -14 9" fill="none" stroke="#7fd8ff" stroke-width="3"
+        stroke-linecap="round" stroke-dasharray="1 8" opacity="0.75"/>
+  <g>
+    <animateTransform attributeName="transform" type="translate" values="0 0; 0 -6; 0 0"
+                      dur="3s" repeatCount="indefinite" calcMode="spline"
+                      keySplines="0.4 0 0.6 1;0.4 0 0.6 1"/>
+    <path d="M186 64 L199 71 L186 78 L173 71 Z" fill="url(#auCubeTop)"/>
+    <path d="M173 71 L186 78 L186 96 L173 89 Z" fill="#63b5ff"/>
+    <path d="M186 78 L199 71 L199 89 L186 96 Z" fill="#8a86ff"/>
+  </g>
+</svg>

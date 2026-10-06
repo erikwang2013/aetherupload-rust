@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640"
+     role="img" aria-labelledby="spTitle spDesc">
+  <title id="spTitle">erikwang2013/aetherupload-rust — GitHub 社交预览</title>
+  <desc id="spDesc">aetherupload-rust 项目：宠物「以太兽」与标语。用于 GitHub 仓库 Social preview（1280×640）。</desc>
+
+  <defs>
+    <linearGradient id="spBg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#141d33"/>
+      <stop offset="1" stop-color="#0b1120"/>
+    </linearGradient>
+    <radialGradient id="spGlow" cx="0.24" cy="0.5" r="0.55">
+      <stop offset="0" stop-color="#4fd1ff" stop-opacity="0.22"/>
+      <stop offset="0.6" stop-color="#7c6cff" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#7c6cff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="spBody" gradientUnits="userSpaceOnUse" x1="250" y1="150" x2="250" y2="440">
+      <stop offset="0" stop-color="#86e6ff"/>
+      <stop offset="0.45" stop-color="#62a7ff"/>
+      <stop offset="1" stop-color="#8f7cff"/>
+    </linearGradient>
+    <linearGradient id="spBar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#22e0b0"/>
+      <stop offset="1" stop-color="#35d0ff"/>
+    </linearGradient>
+    <linearGradient id="spCubeTop" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#d7f6ff"/>
+      <stop offset="1" stop-color="#9fe4ff"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#spBg)"/>
+  <ellipse cx="250" cy="330" rx="330" ry="300" fill="url(#spGlow)"/>
+
+  <!-- 上传箭头（天线） -->
+  <g stroke="#8fe6ff" stroke-width="7" stroke-linecap="round" fill="none" opacity="0.9">
+    <path d="M250 160 V110"/>
+    <path d="M236 132 L250 112 L264 132" stroke-linejoin="round"/>
+  </g>
+
+  <!-- 身体：四个同色圆拼成云团（以太兽） -->
+  <g fill="url(#spBody)">
+    <circle cx="250" cy="330" r="108"/>
+    <circle cx="170" cy="306" r="66"/>
+    <circle cx="330" cy="306" r="66"/>
+    <circle cx="250" cy="238" r="74"/>
+  </g>
+
+  <!-- 表情 -->
+  <g fill="#0d1b34">
+    <ellipse cx="210" cy="298" rx="15" ry="19"/>
+    <ellipse cx="290" cy="298" rx="15" ry="19"/>
+  </g>
+  <g fill="#ffffff" opacity="0.92">
+    <circle cx="204" cy="289" r="5.2"/>
+    <circle cx="284" cy="289" r="5.2"/>
+  </g>
+  <path d="M229 338 q 21 20 42 0" fill="none" stroke="#0d1b34" stroke-width="7" stroke-linecap="round"/>
+
+  <!-- 腹部进度条 -->
+  <rect x="186" y="380" width="128" height="24" rx="12" fill="#0d1b34" opacity="0.22"/>
+  <rect x="186" y="380" width="84" height="24" rx="12" fill="url(#spBar)">
+    <animate attributeName="width" values="76;100;76" dur="4.2s" repeatCount="indefinite"/>
+  </rect>
+
+  <!-- 正在飞来的分块（点线为传输轨迹） -->
+  <path d="M352 196 q -20 10 -30 18" fill="none" stroke="#7fd8ff" stroke-width="6"
+        stroke-linecap="round" stroke-dasharray="2 16" opacity="0.75"/>
+  <g>
+    <animateTransform attributeName="transform" type="translate" values="0 0; 0 -12; 0 0"
+                      dur="3s" repeatCount="indefinite" calcMode="spline"
+                      keySplines="0.4 0 0.6 1;0.4 0 0.6 1"/>
+    <path d="M382 140 L410 154 L382 168 L354 154 Z" fill="url(#spCubeTop)"/>
+    <path d="M354 154 L382 168 L382 204 L354 190 Z" fill="#63b5ff"/>
+    <path d="M382 168 L410 154 L410 190 L382 204 Z" fill="#8a86ff"/>
+  </g>
+
+  <!-- 文字区 -->
+  <g font-family="-apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif">
+    <text x="540" y="252" font-size="62" font-weight="700" fill="#eaf1ff">aetherupload-rust</text>
+    <text x="540" y="300" font-size="26" fill="#8fe6ff">AetherUpload for Rust · 大文件分块上传</text>
+
+    <text x="540" y="368" font-size="24" fill="#c3cff0">切片上传 · 断线续传 · 秒传 · 去重 · 完整性校验</text>
+    <text x="540" y="404" font-size="24" fill="#c3cff0">共用同一套机制，全程不把整份文件读进内存</text>
+
+    <text x="540" y="466" font-size="19" fill="#8b9bc4">默认 feature 零第三方依赖 · 不依赖数据库</text>
+    <text x="540" y="498" font-size="19" fill="#8b9bc4">原生 Rust（Guard）× 8 框架：Axum / Actix Web / Rocket / Poem / Salvo / Warp / bee-rust / e-cat</text>
+    <text x="540" y="530" font-size="19" fill="#8b9bc4">Redis 秒传与 S3 存储皆可选（trait 注入）</text>
+
+    <text x="540" y="588" font-size="18" fill="#5f7096">MIT · © erik.xyz</text>
+    <text x="1240" y="588" font-size="18" text-anchor="end" fill="#5f7096">github.com/erikwang2013/aetherupload-rust</text>
+  </g>
+</svg>
