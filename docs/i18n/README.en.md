@@ -1,12 +1,19 @@
 # erikwang2013/aetherupload-rust
 
+[![Test](https://github.com/erikwang2013/aetherupload-rust/actions/workflows/test.yml/badge.svg)](https://github.com/erikwang2013/aetherupload-rust/actions/workflows/test.yml)
+[![Release](https://img.shields.io/github/v/release/erikwang2013/aetherupload-rust)](https://github.com/erikwang2013/aetherupload-rust/releases)
+[![crates.io](https://img.shields.io/crates/v/aetherupload-rust)](https://crates.io/crates/aetherupload-rust)
+[![docs.rs](https://docs.rs/aetherupload-rust/badge.svg)](https://docs.rs/aetherupload-rust)
+![MSRV](https://img.shields.io/badge/MSRV-1.89-blue)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 <p align="center">
-  <img src="../pet.svg" alt="Aether Beast — the AetherUpload project pet" width="160" />
+  <img src="https://raw.githubusercontent.com/erikwang2013/aetherupload-rust/main/docs/pet.svg" alt="Aether Beast — the AetherUpload project pet" width="160" />
 </p>
 
 <p align="center"><strong>以太兽 · Aether Beast</strong> — the project pet: the upward arrow on its head is the whole file, the progress bar on its belly is the chunks being appended, and the square flying in from the right is the next chunk</p>
 
-[中文](../../README.md) · [English](./README.en.md)
+**Languages:** [中文](../../README.md) · **English**
 
 The file is sliced in the browser, appended chunk by chunk to a temporary file on the server, and named by the md5 of its contents when written to disk — so **upload, resume after disconnect, instant upload, deduplication, and integrity checking all share one mechanism**. The same code runs on native Rust (`Guard`) and on Axum, Actix Web, Rocket, Poem, Salvo, Warp, bee-rust, and e-cat, with **zero third-party dependencies** under the default feature set.
 
@@ -112,7 +119,7 @@ aetherupload-rust/
 │   └── bin/aetherupload/         operations CLI (contains a zero-dependency RESP client)
 ├── assets/                       frontend script: aetherupload-all.js (bundles zepto + spark-md5) + example page
 ├── examples/                     quick start (Axum + example page)
-├── tests/                        kernel unit tests + protocol cases + native Guard + eight-framework end-to-end + S3
+├── tests/                        kernel unit tests + protocol cases + randomized round-trip + concurrency + native Guard + eight-framework end-to-end + S3
 └── docs/
     ├── pet.svg                   the project pet artwork
     ├── architecture.svg          architecture diagram
@@ -124,7 +131,7 @@ aetherupload-rust/
 
 ## Architecture
 
-<img src="./img/architecture.en.svg" alt="AetherUpload-Rust architecture">
+<img src="https://raw.githubusercontent.com/erikwang2013/aetherupload-rust/main/docs/i18n/img/architecture.en.svg" alt="AetherUpload-Rust architecture">
 
 **Four layers with one-way dependencies**: each layer depends on the one below it, never the reverse:
 
@@ -139,7 +146,7 @@ The kernel **knows nothing about any framework**: every file in the adapter laye
 
 ## Design
 
-<img src="./img/design.en.svg" alt="AetherUpload-Rust design">
+<img src="https://raw.githubusercontent.com/erikwang2013/aetherupload-rust/main/docs/i18n/img/design.en.svg" alt="AetherUpload-Rust design">
 
 - **Only three kinds of files ever exist on disk**: `*.part` (chunks), `_header/<temp name>` (checkpoints, storing just one chunkIndex), and `<md5>.<ext>` (finished resources). No database table, no metadata files.
 - **Stateless addressing**: the client receives `savedPath` (`group_subdir_filename`) and sends it back verbatim; the server splits it into three segments and locates the file — nothing has to remember who uploaded what.
@@ -149,7 +156,7 @@ The kernel **knows nothing about any framework**: every file in the adapter laye
 
 ## Request cycle
 
-<img src="./img/request-cycle.en.svg" alt="AetherUpload-Rust request cycle">
+<img src="https://raw.githubusercontent.com/erikwang2013/aetherupload-rust/main/docs/i18n/img/request-cycle.en.svg" alt="AetherUpload-Rust request cycle">
 
 Four routes, two response shapes:
 
@@ -164,7 +171,7 @@ Errors on the upload endpoints are always **HTTP 200 with an `error` field** (ma
 
 ## Upload lifecycle
 
-<img src="./img/upload-lifecycle.en.svg" alt="AetherUpload-Rust upload lifecycle">
+<img src="https://raw.githubusercontent.com/erikwang2013/aetherupload-rust/main/docs/i18n/img/upload-lifecycle.en.svg" alt="AetherUpload-Rust upload lifecycle">
 
 The main path is just four steps: **preprocess → chunk (loop) → final-chunk validation → write to disk**.
 
@@ -323,6 +330,7 @@ let runtime = runtime.with_instant(Arc::new(MyRedis(/* ... */)));
 
 - The key format matches the PHP version: `aetherupload:resource:<group>_<hash>`, with an independent TTL per record (7 days by default; change it with `resource_redis_expire`).
 - It also reads the legacy single hash (`aetherupload_resource`) as a fallback — sites migrating from the PHP version do not have to run `build` first.
+- The legacy fallback fires only when the store advertises the capability (`InstantStore::supports_legacy_fallback`, `false` by default): without it a miss costs a single `GET` instead of a guaranteed-empty extra round trip; implementations that declare it (the RESP client in the bundled CLI) behave exactly as before.
 - Enabling `instant_completion` without a Redis store **is an error** (rather than letting instant upload quietly do nothing), the same stance as the PHP version.
 - Tests and examples can use the built-in `MemoryInstantStore`.
 
@@ -386,8 +394,9 @@ Despite all this hardening, malicious file uploads are impossible to fully defen
 | Configuration carrier | `config/aetherupload.php` array | `Config` struct (same key names, errors caught at compile time) |
 | Middleware | middleware class names in the config (`middleware_*`) | the host's own middleware mechanism; route paths still come from `route_*` |
 | Per-request state | `RequestContext` + a `ConfigMapper` singleton rebuilt every request | group snapshot passed explicitly as an argument; no global state |
+| Checkpoint file concurrency | `file_get_contents` reads without a lock and can race `ftruncate` | `read` takes a **shared lock** (mutually exclusive with the writer’s exclusive lock): concurrent chunks never observe an empty checkpoint, and never destroy the whole upload because of it |
 | Error messages | known exceptions all collapse into the translation of `upload_error` | a specific translation per error kind (clients only test `error` for truthiness, so the protocol stays compatible) |
-| MIME detection | `mime_content_type()` from `ext-fileinfo` | built-in magic-number detector (replaceable through the `MimeDetector` trait); files such as `.docx` are judged as `application/zip`, which may differ from fileinfo |
+| MIME detection | `mime_content_type()` from `ext-fileinfo` | built-in magic-number detector (replaceable through the `MimeDetector` trait); files such as `.docx` are judged as `application/zip`, which may differ from fileinfo. The 512-byte probe window treats a **truncated multi-byte sequence at the window edge as text** — a Chinese `.txt` is never misjudged as binary just because the window cut a character in half |
 | Subdirectory rule | `date()` in the server's local timezone | **UTC** (no timezone library available with zero dependencies); differs only at timezone boundaries around the start and end of a month |
 | Pseudo-random temp names | `random_bytes()` (CSPRNG) | `/dev/urandom` (the same CSPRNG); falls back to splitmix64 over time ^ pid when unreadable |
 | HTTP Range | webman does not implement Range (it delegates to nginx through `x_accel_redirect`) | also not implemented, also delegated to the fronting server (Salvo's `NamedFile` happens to support Range) |
@@ -412,8 +421,8 @@ The artwork lives in `docs/pet.svg` (carried over from the PHP project unchanged
 ## Open Source is Not Easy, Your Support is Welcome
 
 <p>
-  <img src="../weixinpay.png" alt="WeChat donation" width="200" />
-  <img src="../alipay.png" alt="Alipay donation" width="200" />
+  <img src="https://raw.githubusercontent.com/erikwang2013/aetherupload-rust/main/docs/weixinpay.png" alt="WeChat donation" width="200" />
+  <img src="https://raw.githubusercontent.com/erikwang2013/aetherupload-rust/main/docs/alipay.png" alt="Alipay donation" width="200" />
 </p>
 
 ## Copyright

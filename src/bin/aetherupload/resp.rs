@@ -172,6 +172,12 @@ impl InstantStore for RespClient {
         self.command(&["DEL", key]).map(|_| ())
     }
 
+    /// 本实现真的会去读旧版单 hash（`HGET aetherupload_resource`），声明能力位为真，
+    /// 从 PHP 版迁移站点的存量数据继续可命中。
+    fn supports_legacy_fallback(&self) -> bool {
+        true
+    }
+
     fn legacy_get(&self, field: &str) -> Result<Option<String>> {
         self.command(&["HGET", LEGACY_HASH_KEY, field])
             .map(Reply::into_bulk)

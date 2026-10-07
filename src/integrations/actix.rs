@@ -22,9 +22,9 @@
 //! 分块大小 + 1MB 余量）：读请求体时逐块累计，超了就断开，不会被静默截断（actix 的
 //! `Payload` 不是 `Send`，喂不进 multer 的流式解析器，所以先收下再解析）。
 //!
-//! 本地文件下发用流式响应：64KB 一读、边读边发，整份文件不进内存；读盘交给 `web::block`
-//! 的执行线程，不占 worker。**不实现 HTTP Range** —— 与 PHP/webman 版一致，需要断点下载 /
-//! 视频拖动请开 `x_accel_redirect` 交给前置服务器。
+//! 本地文件下发用流式响应：64KB 一读、边读边发，整份文件不进内存；打开与读盘都交给
+//! `web::block` 的执行线程，不在 worker 上做同步文件 IO。**不实现 HTTP Range** —— 与
+//! PHP/webman 版一致，需要断点下载 / 视频拖动请开 `x_accel_redirect` 交给前置服务器。
 
 use std::fs::File;
 use std::io::{self, Read};
@@ -195,7 +195,9 @@ pub async fn serve(response: ResourceResponse) -> HttpResponse {
             path,
             download_name,
         } => {
-            let Ok(file) = File::open(&path) else {
+            // 打开文件同样要走阻塞线程池：serve 本身在 worker 上，同步的 open 会占住它
+            let open_path = path.clone();
+            let Ok(Ok(file)) = web::block(move || File::open(open_path)).await else {
                 return HttpResponse::NotFound().body("not found");
             };
 
@@ -225,7 +227,8 @@ fn apply_headers(builder: &mut HttpResponseBuilder, headers: Vec<(String, String
     }
 }
 
-/// 流式读盘：64KB 一块，读完即发，整份文件不进内存。
+/// 流式读盘：64KB 一块，读完即发，整份文件不进内存；每块读都跑在 `web::block` 的
+/// 阻塞线程池上，不占 worker。
 fn file_stream(
     file: File,
 ) -> impl futures_util::Stream<Item = Result<web::Bytes, io::Error>> + 'static {

@@ -13,7 +13,8 @@ name: Auto Release
 #
 # 注意：破坏性标记**只看标题 + 正文行首的英文 footer**，不看正文里的中文词。
 #
-# 发布到 crates.io 时，需保证 Cargo.toml 的 version 与该 tag 一致。
+# 发布到 crates.io 时，需保证 Cargo.toml 的 version 与该 tag 一致 ——
+# 因此打 tag 前先同步 Cargo.toml（不一致时自动补一个 chore 提交），避免版本漂移。
 
 on:
   push:
@@ -75,6 +76,23 @@ jobs:
           fi
           echo "从 ${latest:-（无 tag）} 递增到 $new_tag"
           echo "tag=$new_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Sync Cargo.toml version
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          version="${{ steps.version.outputs.tag }}"
+          sed -i -E "s/^version = \"[0-9]+\.[0-9]+\.[0-9]+\"/version = \"${version#v}\"/" Cargo.toml
+
+          if git diff --quiet Cargo.toml; then
+            echo "Cargo.toml 已是 ${version#v}，无需同步"
+          else
+            git add Cargo.toml
+            git commit -m "chore: 同步 Cargo.toml 版本至 $version"
+            git push origin HEAD:main
+          fi
 
       - name: Create and push tag
         if: steps.check.outputs.skip == 'false'

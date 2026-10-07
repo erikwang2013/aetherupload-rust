@@ -202,6 +202,22 @@ impl MimeDetector for MagicBytesDetector {
     }
 }
 
+/// 把探测窗口当文本看：**末尾残缺的多字节序列不算「二进制」**。
+///
+/// 探测窗口固定 512 字节，切在一个多字节字符中间是常态（例如中文文本）——
+/// 直接 `from_utf8` 失败会让整份文件被判成 `application/octet-stream`，
+/// 进而被白名单拒掉（大一点的中文 `.txt` 就传不上去）。这里在
+/// `error_len().is_none()`（仅末尾残缺）时按 `valid_up_to()` 截断后再判。
+fn probe_text(head: &[u8]) -> Option<&str> {
+    match std::str::from_utf8(head) {
+        Ok(text) => Some(text),
+        Err(err) if err.error_len().is_none() => {
+            std::str::from_utf8(&head[..err.valid_up_to()]).ok()
+        }
+        Err(_) => None,
+    }
+}
+
 /// 纯函数：从字节头部判断 MIME（便于单测，不需要真文件）。
 ///
 /// 返回的类型都保证能在 [`table`] 里反查到扩展名，否则内核会在
@@ -268,7 +284,7 @@ pub fn detect_bytes(head: &[u8]) -> Option<String> {
     // 含 NUL 的一律当二进制 —— UTF-8 里 0x00 是合法字符，不排掉会把「一堆控制字节」
     // 判成 text/plain（file(1) 也以 NUL 作为二进制判据）。
     if !head.contains(&0)
-        && let Ok(text) = std::str::from_utf8(head)
+        && let Some(text) = probe_text(head)
     {
         let trimmed = text.trim_start_matches(['\u{feff}', ' ', '\t', '\r', '\n']);
         if trimmed.starts_with("<svg") || (trimmed.starts_with("<?xml") && trimmed.contains("<svg"))
@@ -312,6 +328,30 @@ mod tests {
         // extra 独有扩展名排在表后
         let extra = vec![("foo".to_string(), "application/x-foo".to_string())];
         assert_eq!(search("application/x-foo", &extra).as_deref(), Some("foo"));
+    }
+
+    /// 512 字节窗口切在多字节字符中间时，仍须判成文本（否则中文 .txt 传不上去）。
+    #[test]
+    fn probe_window_cutting_a_multibyte_char_is_still_text() {
+        // 每周期 36 字节、512 % 36 == 8 —— 必然切在汉字内部
+        let text = "以太兽 Aether Beast 上传测试 ".repeat(30).into_bytes();
+        assert!(text.len() > 512, "要跨过探测窗口");
+
+        let head = &text[..512];
+        assert!(
+            std::str::from_utf8(head).is_err(),
+            "这组数据就该切在字符中间"
+        );
+        assert_eq!(detect_bytes(head).as_deref(), Some("text/plain"));
+
+        // 反过来：中间就坏掉的字节（error_len 有值）仍然算二进制
+        let mut broken = "有效文本".as_bytes().to_vec();
+        broken.extend_from_slice(&[0xff, 0xfe]);
+        broken.extend_from_slice("后面还是文本".as_bytes());
+        assert_eq!(
+            detect_bytes(&broken).as_deref(),
+            Some("application/octet-stream")
+        );
     }
 
     #[test]

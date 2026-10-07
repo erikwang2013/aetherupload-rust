@@ -1,12 +1,19 @@
 # erikwang2013/aetherupload-rust
 
+[![Test](https://github.com/erikwang2013/aetherupload-rust/actions/workflows/test.yml/badge.svg)](https://github.com/erikwang2013/aetherupload-rust/actions/workflows/test.yml)
+[![Release](https://img.shields.io/github/v/release/erikwang2013/aetherupload-rust)](https://github.com/erikwang2013/aetherupload-rust/releases)
+[![crates.io](https://img.shields.io/crates/v/aetherupload-rust)](https://crates.io/crates/aetherupload-rust)
+[![docs.rs](https://docs.rs/aetherupload-rust/badge.svg)](https://docs.rs/aetherupload-rust)
+![MSRV](https://img.shields.io/badge/MSRV-1.89-blue)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 <p align="center">
-  <img src="./docs/pet.svg" alt="以太兽 — AetherUpload 项目宠物" width="160" />
+  <img src="https://raw.githubusercontent.com/erikwang2013/aetherupload-rust/main/docs/pet.svg" alt="以太兽 — AetherUpload 项目宠物" width="160" />
 </p>
 
 <p align="center"><strong>以太兽 · Aether Beast</strong> — 项目宠物：头顶向上的箭头是整份文件，腹部的进度条是正在追加的分块，右边飞来的方块是下一个分块</p>
 
-[中文](README.md) · [English](docs/i18n/README.en.md)
+**语言：** **中文** · [English](docs/i18n/README.en.md)
 
 浏览器里把文件切片，逐块追加到服务端的一个临时文件，落盘时用文件内容的 md5 命名 —— 于是**上传、断线续传、秒传、去重、完整性校验共用同一套机制**，同一份代码跑在原生 Rust（`Guard`）与 Axum、Actix Web、Rocket、Poem、Salvo、Warp、bee-rust、e-cat 上，默认 feature 下**零第三方依赖**。
 
@@ -112,7 +119,7 @@ aetherupload-rust/
 │   └── bin/aetherupload/         运维 CLI（内含一个零依赖 RESP 客户端）
 ├── assets/                       前端脚本：aetherupload-all.js（含 zepto + spark-md5）+ 示例页
 ├── examples/                     快速开始（Axum + 示例页）
-├── tests/                        内核单测 + 协议用例 + 原生 Guard + 八框架端到端 + S3
+├── tests/                        内核单测 + 协议用例 + 随机回环 + 并发竞态 + 原生 Guard + 八框架端到端 + S3
 └── docs/
     ├── pet.svg                   项目宠物形象
     ├── architecture.svg          架构设计图
@@ -124,7 +131,7 @@ aetherupload-rust/
 
 ## 架构设计
 
-<img src="./docs/architecture.svg" alt="AetherUpload-Rust 架构图">
+<img src="https://raw.githubusercontent.com/erikwang2013/aetherupload-rust/main/docs/architecture.svg" alt="AetherUpload-Rust 架构图">
 
 **四层单向依赖**，上层依赖下层，反向不成立：
 
@@ -139,7 +146,7 @@ aetherupload-rust/
 
 ## 功能设计
 
-<img src="./docs/design.svg" alt="AetherUpload-Rust 功能设计">
+<img src="https://raw.githubusercontent.com/erikwang2013/aetherupload-rust/main/docs/design.svg" alt="AetherUpload-Rust 功能设计">
 
 - **磁盘上永远只有三类文件**：`*.part`（分块）、`_header/<临时名>`（断点，只存一个 chunkIndex）、`<md5>.<ext>`（成品）。没有数据库表，没有元数据文件。
 - **无状态寻址**：客户端拿到 `savedPath`（`分组_子目录_文件名`）原样回传，服务端拆三段即可定位，不需要记「谁传了什么」。
@@ -149,7 +156,7 @@ aetherupload-rust/
 
 ## 请求周期
 
-<img src="./docs/request-cycle.svg" alt="AetherUpload-Rust 请求周期">
+<img src="https://raw.githubusercontent.com/erikwang2013/aetherupload-rust/main/docs/request-cycle.svg" alt="AetherUpload-Rust 请求周期">
 
 四条路由，两种响应形态：
 
@@ -164,7 +171,7 @@ aetherupload-rust/
 
 ## 上传生命周期
 
-<img src="./docs/upload-lifecycle.svg" alt="AetherUpload-Rust 上传生命周期">
+<img src="https://raw.githubusercontent.com/erikwang2013/aetherupload-rust/main/docs/upload-lifecycle.svg" alt="AetherUpload-Rust 上传生命周期">
 
 主路径只有四步：**预处理 → 分块（循环）→ 最后一块校验 → 落盘**。
 
@@ -323,6 +330,7 @@ let runtime = runtime.with_instant(Arc::new(MyRedis(/* ... */)));
 
 - 键格式与 PHP 版一致：`aetherupload:resource:<分组>_<hash>`，每条独立 TTL（默认 7 天，`resource_redis_expire` 可改）。
 - 也兼容旧版单 hash（`aetherupload_resource`）的回退读取 —— 从 PHP 版迁移过来的站点不用先跑一遍 `build`。
+- 旧版回退按**能力位**触发（`InstantStore::supports_legacy_fallback`，默认 `false`）：没声明就不发那次注定为空的往返，未命中只花一次 `GET`；声明了的实现（仓库 CLI 里的 RESP 客户端）行为与不带能力位时一字不差。
 - 没接 Redis 却开了 `instant_completion` 时**会报错**（而不是让秒传静默失效），与 PHP 版同一取向。
 - 测试与示例可以用内置的 `MemoryInstantStore`。
 
@@ -386,8 +394,9 @@ let runtime = runtime.with_storage(Arc::new(storage));
 | 配置载体 | `config/aetherupload.php` 数组 | `Config` 结构体（键名相同，编译期查错） |
 | 中间件 | 配置里写中间件类名（`middleware_*`） | 用宿主自己的中间件机制；路由路径仍取 `route_*` |
 | 每请求状态 | `RequestContext` + 每请求重建的 `ConfigMapper` 单例 | 分组快照显式传参，无全局状态 |
+| 断点文件并发 | `file_get_contents` 无锁读，可能与 `ftruncate` 撞窗口 | `read` 取**共享锁**（与写入的排他锁互斥）：并发分块不会读到空断点、更不会因此清掉整份上传 |
 | 错误文案 | 已知异常统一折叠成 `upload_error` 的译文 | 按错误种类给出具体译文（客户端只判 `error` 真值，协议兼容） |
-| MIME 探测 | `ext-fileinfo` 的 `mime_content_type()` | 内置魔数探测器（`MimeDetector` trait 可替换）；`.docx` 这类会按 `application/zip` 判定，与 fileinfo 的判断可能不同 |
+| MIME 探测 | `ext-fileinfo` 的 `mime_content_type()` | 内置魔数探测器（`MimeDetector` trait 可替换）；`.docx` 这类会按 `application/zip` 判定，与 fileinfo 的判断可能不同。探测窗口 512 字节，**落在窗口末尾的残缺多字节序列按文本处理** —— 中文 `.txt` 不会因为窗口切在汉字中间被误判成二进制 |
 | 子目录规则 | 服务器本地时区的 `date()` | **UTC**（零依赖下拿不到时区库）；只在月末月初的时区边界上有差异 |
 | 伪随机临时名 | `random_bytes()`（CSPRNG） | `/dev/urandom`（同一 CSPRNG）；读不到时退化为时间 ^ pid 的 splitmix64 |
 | HTTP Range | webman 不实现 Range（靠 `x_accel_redirect` 交给 nginx） | 同样不实现，同样交给前置服务器（Salvo 的 `NamedFile` 会顺带支持 Range） |
@@ -412,8 +421,8 @@ let runtime = runtime.with_storage(Arc::new(storage));
 ## 开源不易，欢迎支持 / Open Source is Not Easy, Your Support is Welcome
 
 <p>
-  <img src="./docs/weixinpay.png" alt="微信赞赏" width="200" />
-  <img src="./docs/alipay.png" alt="支付宝赞赏" width="200" />
+  <img src="https://raw.githubusercontent.com/erikwang2013/aetherupload-rust/main/docs/weixinpay.png" alt="微信赞赏" width="200" />
+  <img src="https://raw.githubusercontent.com/erikwang2013/aetherupload-rust/main/docs/alipay.png" alt="支付宝赞赏" width="200" />
 </p>
 
 ## 版权

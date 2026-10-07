@@ -10,13 +10,13 @@
 //! 磁盘往返；请求体上限按 `chunk_size` 放开（warp 的默认值是 2MB，可能与分块同量级，
 //! 见 [`crate::integrations::body_limit`]）。
 //!
-//! 本地文件下发用 [`warp::reply::stream`] + 64KB 分块读，不把整份文件读进内存。
-//! **没有用 `warp::fs::file`**：它的路径在过滤器构造期就固定，而这里要下发的文件由
-//! 请求里的 `saved_path` 运行时决定，warp 的 `Filter` 也不是 `Future`，无法在 handler
-//! 里按运行时路径再构造一个文件过滤器。读盘与内核同为同步 IO（本机磁盘、一次一块），
-//! 要完全避开 worker 占用请开 `x_accel_redirect` 交给前置服务器。
+//! 本地文件下发用 [`warp::reply::stream`] + `tokio::fs::File` / `ReaderStream`：64KB
+//! 一分块、边读边发，整份文件不进内存，读盘走 `tokio::fs` 的阻塞线程池（不在 worker
+//! 上做同步 IO）。**没有用 `warp::fs::file`**：它的路径在过滤器构造期就固定，而这里
+//! 要下发的文件由请求里的 `saved_path` 运行时决定，warp 的 `Filter` 也不是 `Future`，
+//! 无法在 handler 里按运行时路径再构造一个文件过滤器。
 //! **不实现 HTTP Range** —— 与 PHP/webman 版一致，需要断点下载/视频拖动请开
-//! `x_accel_redirect`。
+//! `x_accel_redirect` 交给前置服务器。
 //!
 //! ```no_run
 //! use std::sync::Arc;
@@ -33,12 +33,10 @@
 //! ```
 
 use std::convert::Infallible;
-use std::io::Read;
 use std::path::Path;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 
+use tokio_util::io::ReaderStream;
 use warp::Filter;
 use warp::filters::BoxedFilter;
 use warp::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
@@ -152,8 +150,10 @@ fn display(
         .and(warp::path::param::<String>())
         .and(warp::path::end())
         .and(with_runtime(runtime))
-        .map(|saved_path: String, runtime: Arc<Runtime>| {
-            serve(ResourceController::new(runtime).display(&saved_path))
+        .and_then(|saved_path: String, runtime: Arc<Runtime>| async move {
+            let response = ResourceController::new(runtime).display(&saved_path);
+
+            Ok::<_, Rejection>(serve(response).await)
         })
 }
 
@@ -168,15 +168,17 @@ fn download(
         .and(warp::path::param::<String>())
         .and(warp::path::end())
         .and(with_runtime(runtime))
-        .map(
-            |saved_path: String, new_name: String, runtime: Arc<Runtime>| {
-                serve(ResourceController::new(runtime).download(&saved_path, &new_name))
+        .and_then(
+            |saved_path: String, new_name: String, runtime: Arc<Runtime>| async move {
+                let response = ResourceController::new(runtime).download(&saved_path, &new_name);
+
+                Ok::<_, Rejection>(serve(response).await)
             },
         )
 }
 
 /// 内核响应 → warp 响应。文件走分块流；文件打不开时按 404 回（与 axum 适配层一致）。
-pub fn serve(response: ResourceResponse) -> Response {
+pub async fn serve(response: ResourceResponse) -> Response {
     let headers = response.headers();
 
     match response {
@@ -193,11 +195,15 @@ pub fn serve(response: ResourceResponse) -> Response {
             path,
             download_name,
         } => {
-            let Ok(file) = FileStream::open(&path) else {
+            // warp 只在处理请求体时自己包了 `tokio::fs`，响应侧没有公开的「从路径造流」
+            // 入口（`Body` 是私有类型），所以这里用 `tokio::fs` 打开后交给 `ReaderStream`
+            // 造流：64KB 一读，整份文件不进内存。
+            let Ok(file) = tokio::fs::File::open(&path).await else {
                 return buffered(StatusCode::NOT_FOUND, headers, "not found".to_string());
             };
 
-            let mut response = warp::reply::stream(file).into_response();
+            let stream = ReaderStream::with_capacity(file, 64 * 1024);
+            let mut response = warp::reply::stream(stream).into_response();
             apply_headers(response.headers_mut(), headers);
 
             if let Some(content_type) = content_type_for(&path) {
@@ -309,49 +315,4 @@ fn content_type_for(path: &Path) -> Option<String> {
 
     // 表里查不到时退回 octet-stream 没有意义 —— 交给浏览器自己嗅探
     (mime != "application/octet-stream").then_some(mime)
-}
-
-/// 本地文件的分块流：64KB 一读，整份文件不进内存。
-///
-/// warp 只在处理请求体时自己包了 `tokio::fs`，响应侧没有公开的“从路径造流”入口
-/// （`Body` 是私有类型），所以这里自己实现 `Stream` 交给 `warp::reply::stream`。
-struct FileStream {
-    file: std::fs::File,
-    buf: Vec<u8>,
-    done: bool,
-}
-
-impl FileStream {
-    fn open(path: &Path) -> std::io::Result<Self> {
-        Ok(Self {
-            file: std::fs::File::open(path)?,
-            buf: vec![0; 64 * 1024],
-            done: false,
-        })
-    }
-}
-
-impl Stream for FileStream {
-    type Item = Result<Vec<u8>, std::io::Error>;
-
-    fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        // FileStream 全是 Unpin 字段，取回 &mut self 才能同时借 file 与 buf
-        let this = self.get_mut();
-
-        if this.done {
-            return Poll::Ready(None);
-        }
-
-        match this.file.read(&mut this.buf) {
-            Ok(0) => {
-                this.done = true;
-                Poll::Ready(None)
-            }
-            Ok(read) => Poll::Ready(Some(Ok(this.buf[..read].to_vec()))),
-            Err(err) => {
-                this.done = true;
-                Poll::Ready(Some(Err(err)))
-            }
-        }
-    }
 }

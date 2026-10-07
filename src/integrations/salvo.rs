@@ -2,9 +2,9 @@
 
 //! Salvo 集成：一个 [`Router`]，四条路由一次挂好。
 //!
-//! 分块走 salvo 的 multipart 表单解析：**文件字段会先落到临时文件**，这里再读回
-//! 内存交给内核（默认分块 1MB）。内核同样接受 `ChunkBody::Path`，想省掉这次拷贝
-//! 可把 `part.path()` 直接传进去。
+//! 分块走 salvo 的 multipart 表单解析：**文件字段会先落到临时文件**，这里再用
+//! `tokio::fs` 异步读回内存交给内核（默认分块 1MB，读盘不做阻塞调用）。内核同样
+//! 接受 `ChunkBody::Path`，想省掉这次拷贝可把 `part.path()` 直接传进去。
 //!
 //! 本地文件下发用 [`NamedFile`]：超过 1MB 走 `ChunkedFile` 流式读，不把整份文件
 //! 读进内存（1MB 以内由 salvo 预读，省掉小块读的系统调用），并且**顺带支持 HTTP
@@ -134,7 +134,8 @@ async fn download(req: &mut Request, depot: &mut Depot, res: &mut Response) {
 }
 
 /// 把 multipart 表单读成 [`FormData`]：文本字段搬进内存，分块字段（salvo 已落临时
-/// 文件）读回内存 —— 与 axum / poem 适配层保持同一种「分块走内存」的取舍。
+/// 文件）用 `tokio::fs` 异步读回内存 —— 与 axum / poem 适配层保持同一种「分块走内存」
+/// 的取舍。
 async fn parse_multipart(req: &mut Request, limit: usize) -> Result<FormData, String> {
     let form_data = req
         .form_data_max_size(limit)
@@ -148,7 +149,9 @@ async fn parse_multipart(req: &mut Request, limit: usize) -> Result<FormData, St
     }
 
     if let Some(part) = form_data.files.get("resource_chunk") {
-        let bytes = std::fs::read(part.path()).map_err(|err| err.to_string())?;
+        let bytes = tokio::fs::read(part.path())
+            .await
+            .map_err(|err| err.to_string())?;
         form.push_file("resource_chunk", ChunkBody::Bytes(bytes));
     }
 

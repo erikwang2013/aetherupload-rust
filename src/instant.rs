@@ -51,7 +51,17 @@ pub trait InstantStore: Send + Sync {
         Ok(())
     }
 
-    /// 旧版单 hash 回退读取；不需要兼容存量数据的实现用默认实现即可。
+    /// 能力位：本 store 是否真的实现了旧版单 hash 回退（`legacy_get`/`legacy_del`）。
+    ///
+    /// 默认 `false` —— 绝大多数站点没有 PHP 版迁移过来的存量数据，[`InstantIndex::get`]
+    /// 主键未命中时就不必再发一次注定空的网络往返；只有确实会读旧 hash 的客户端
+    /// （如本仓库的 RESP 客户端）才声明 `true`，声明后行为与没有能力位时一字不差。
+    fn supports_legacy_fallback(&self) -> bool {
+        false
+    }
+
+    /// 旧版单 hash 回退读取；不需要兼容存量数据的实现用默认实现即可
+    /// （并把 [`InstantStore::supports_legacy_fallback`] 保持默认的 `false`）。
     fn legacy_get(&self, _field: &str) -> Result<Option<String>> {
         Ok(None)
     }
@@ -102,6 +112,7 @@ impl InstantStore for NullInstantStore {
 /// 内存实现：**供测试与示例使用**（PHP 侧对应测试里的数组替身）。
 ///
 /// 不做过期 —— TTL 参数被忽略；只在单进程内有效。生产环境请注入真实 Redis 客户端。
+/// 没有旧版单 hash 的概念，**不参与回退**：能力位保持默认的 `false`。
 #[derive(Debug, Default)]
 pub struct MemoryInstantStore {
     entries: Mutex<HashMap<String, String>>,
@@ -165,11 +176,18 @@ impl<'a> InstantIndex<'a> {
 
     /// 读取：主键未命中时回退旧版单 hash（历史数据仍可命中）。
     ///
+    /// 回退只在 store 声明 [`InstantStore::supports_legacy_fallback`] 为 `true` 时发生：
+    /// 没接旧数据的 store 未命中就到此为止，省掉一次纯属白跑的往返。
+    ///
     /// 与 PHP 的差异：PHP 未命中抛 `read error`、由调用方 catch 成 null；这里直接
     /// 返回 `Ok(None)` —— 调用点少一层 catch，语义相同。
     pub fn get(&self, key: &str) -> Result<Option<String>> {
         if let Some(saved_path) = self.store.get(&format!("{KEY_PREFIX}{key}"))? {
             return Ok(Some(saved_path));
+        }
+
+        if !self.store.supports_legacy_fallback() {
+            return Ok(None);
         }
 
         self.store.legacy_get(key)
@@ -206,6 +224,7 @@ impl<'a> InstantIndex<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn key_format_matches_php() {
@@ -268,6 +287,9 @@ mod tests {
             fn del(&self, key: &str) -> Result<()> {
                 self.0.del(key)
             }
+            fn supports_legacy_fallback(&self) -> bool {
+                true
+            }
             fn legacy_get(&self, field: &str) -> Result<Option<String>> {
                 self.0.get(&format!("{LEGACY_HASH_KEY}:{field}"))
             }
@@ -293,6 +315,92 @@ mod tests {
 
         index.delete("file_old").unwrap();
         assert_eq!(index.get("file_old").unwrap(), None);
+    }
+
+    /// 计数 store：把 `legacy_get` 的调用次数记下来，验证未命中不再多付一次往返。
+    struct CountingLegacyStore {
+        inner: MemoryInstantStore,
+        supports: bool,
+        legacy_calls: AtomicUsize,
+    }
+
+    impl CountingLegacyStore {
+        fn new(supports: bool) -> Self {
+            Self {
+                inner: MemoryInstantStore::new(),
+                supports,
+                legacy_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn legacy_calls(&self) -> usize {
+            self.legacy_calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl InstantStore for CountingLegacyStore {
+        fn get(&self, key: &str) -> Result<Option<String>> {
+            self.inner.get(key)
+        }
+        fn set_ex(&self, key: &str, value: &str, ttl: u64) -> Result<()> {
+            self.inner.set_ex(key, value, ttl)
+        }
+        fn del(&self, key: &str) -> Result<()> {
+            self.inner.del(key)
+        }
+        fn supports_legacy_fallback(&self) -> bool {
+            self.supports
+        }
+        fn legacy_get(&self, field: &str) -> Result<Option<String>> {
+            self.legacy_calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.get(&format!("{LEGACY_HASH_KEY}:{field}"))
+        }
+    }
+
+    /// 能力位为假：主键未命中就到此为止，`legacy_get` 一次都不许调 ——
+    /// 哪怕旧 hash 里确实躺着数据。
+    #[test]
+    fn legacy_fallback_skipped_without_capability() {
+        let store = CountingLegacyStore::new(false);
+        store
+            .set_ex(
+                &format!("{LEGACY_HASH_KEY}:file_old"),
+                "file_202610_old.jpg",
+                0,
+            )
+            .unwrap();
+
+        let index = InstantIndex::new(&store, EXPIRE_SECONDS);
+        assert_eq!(index.get("file_old").unwrap(), None);
+        assert_eq!(store.legacy_calls(), 0);
+    }
+
+    /// 能力位为真：行为与从前一字不差 —— 未命中回退旧 hash 且只回退一次；
+    /// 主键命中则连回退都不发生。
+    #[test]
+    fn legacy_fallback_runs_once_with_capability() {
+        let store = CountingLegacyStore::new(true);
+        store
+            .set_ex(
+                &format!("{LEGACY_HASH_KEY}:file_old"),
+                "file_202610_old.jpg",
+                0,
+            )
+            .unwrap();
+
+        let index = InstantIndex::new(&store, EXPIRE_SECONDS);
+        assert_eq!(
+            index.get("file_old").unwrap().as_deref(),
+            Some("file_202610_old.jpg")
+        );
+        assert_eq!(store.legacy_calls(), 1);
+
+        index.set("file_new", "file_202610_new.jpg").unwrap();
+        assert_eq!(
+            index.get("file_new").unwrap().as_deref(),
+            Some("file_202610_new.jpg")
+        );
+        assert_eq!(store.legacy_calls(), 1);
     }
 
     #[test]

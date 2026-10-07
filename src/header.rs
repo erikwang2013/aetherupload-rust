@@ -60,11 +60,19 @@ impl Header {
     }
 
     pub fn read(&self) -> Result<String> {
-        let mut content = String::new();
+        let mut file = File::open(&self.real_path).map_err(|_| Error::ReadHeaderFail)?;
 
-        File::open(&self.real_path)
-            .and_then(|mut file| file.read_to_string(&mut content))
-            .map_err(|_| Error::ReadHeaderFail)?;
+        // **共享锁**：与 write() 的排他锁互斥。少了它会撞进 write 的
+        // 「set_len(0) → write_all」窗口，读到空文件 → ReadHeaderFail →
+        // save_chunk 的错误分支把整份上传的 `.part` 与断点一起清掉（数据销毁级的并发竞态）。
+        file.lock_shared().map_err(|_| Error::ReadHeaderFail)?;
+
+        let mut content = String::new();
+        let read = file.read_to_string(&mut content);
+
+        let _ = file.unlock();
+
+        read.map_err(|_| Error::ReadHeaderFail)?;
 
         Ok(content)
     }
@@ -117,6 +125,43 @@ mod tests {
         assert!(!header.exists());
         assert!(matches!(header.read(), Err(Error::ReadHeaderFail)));
         assert!(matches!(header.delete(), Err(Error::DeleteHeaderFail)));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 读写交错：`write` 的排他锁与 `read` 的共享锁必须互斥，
+    /// 否则读者会撞进「truncate 之后、write 之前」的空窗口（单测里表现为偶发 ReadHeaderFail）。
+    #[test]
+    fn concurrent_reads_never_observe_the_truncate_window() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let root = temp_root("rw-race");
+        let header = Arc::new(Header::new(&root, "race"));
+        header.write("1").unwrap();
+
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let writer = {
+            let header = Arc::clone(&header);
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                let mut n = 1u64;
+                while !stop.load(Ordering::Relaxed) {
+                    n += 1;
+                    header.write(&n.to_string()).unwrap();
+                }
+            })
+        };
+
+        // 2000 次读取：每一次读到的都必须是「能解析成数字」的内容 —— 空读即竞态
+        for _ in 0..2000 {
+            let value = header.read_index().expect("读写必须互斥：读到空内容即竞态");
+            assert!(value >= 1, "断点值必须来自某次完整写入");
+        }
+
+        stop.store(true, Ordering::Relaxed);
+        writer.join().unwrap();
 
         let _ = std::fs::remove_dir_all(&root);
     }

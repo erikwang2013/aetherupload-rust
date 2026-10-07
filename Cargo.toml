@@ -2,7 +2,7 @@
 
 [package]
 name = "aetherupload-rust"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2024"
 rust-version = "1.89"
 description = "AetherUpload for Rust：前端切片、后端追加落盘 —— 上传 / 断线续传 / 秒传 / 去重 / 完整性校验共用同一套机制；内核与宿主框架解耦（原生 Guard + Axum、Actix Web、Rocket、Poem、Salvo、Warp、bee-rust、e-cat），默认 feature 零第三方依赖"
@@ -19,6 +19,10 @@ categories = ["web-programming", "filesystem"]
 exclude = [
     "CLAUDE.md",   # 仓库的 agent 配置，与使用者无关
     "AGENTS.md",
+    "docs/weixinpay.png",      # 赞助码与社交预览图只在仓库/GitHub 页面用，
+    "docs/alipay.png",         # crate 使用者用不到 —— README 里已改为绝对 URL 引用
+    "docs/social-preview.svg",
+    "docs/social-preview.png",
     "ruvector.db",
     ".swarm",
     ".claude-flow",
@@ -26,6 +30,11 @@ exclude = [
     ".codex",
     ".mcp.json",
 ]
+
+# docs.rs 默认只按默认 feature 构建（= 零依赖内核），适配层与 S3 会缺席；
+# 打开全部 feature 后 API 文档才完整
+[package.metadata.docs.rs]
+all-features = true
 
 [lib]
 name = "aetherupload"
@@ -39,11 +48,11 @@ default = []
 # 八个宿主框架：每个只做接线（注册路由 / 翻译入参 / 翻译响应），内核不感知任何框架
 # 注意 bee 的 feature 名叫 `bee-rust`（与项目命名一致），crate 仍是 bee_router
 axum = ["dep:axum", "dep:tokio", "dep:tokio-util"]
-actix = ["dep:actix-web", "dep:multer", "dep:futures-util"]
+actix = ["dep:actix-web", "dep:multer", "dep:futures-util", "dep:tokio"]
 rocket = ["dep:rocket"]
 poem = ["dep:poem", "dep:tokio", "dep:tokio-util"]
-salvo = ["dep:salvo"]
-warp = ["dep:warp"]
+salvo = ["dep:salvo", "dep:tokio"]
+warp = ["dep:warp", "dep:tokio", "dep:tokio-util"]
 bee-rust = ["dep:bee_router", "axum"]
 ecat = ["axum"]
 # 可选对象存储（S3 兼容）：内置最小 SigV4 客户端
