@@ -2,7 +2,7 @@
 
 [package]
 name = "aetherupload-rust"
-version = "1.0.2"
+version = "1.0.3"
 edition = "2024"
 rust-version = "1.89"
 description = "AetherUpload for Rust：前端切片、后端追加落盘 —— 上传 / 断线续传 / 秒传 / 去重 / 完整性校验共用同一套机制；内核与宿主框架解耦（原生 Guard + Axum、Actix Web、Rocket、Poem、Salvo、Warp、bee-rust、e-cat），默认 feature 零第三方依赖"

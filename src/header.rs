@@ -59,6 +59,30 @@ impl Header {
         result.map_err(|_| Error::WriteHeaderFail)
     }
 
+    /// 取得**排他锁并保持到守卫释放** —— 给「读断点 → 校验 → 追加 → 回写断点」
+    /// 这类读-改-写序列用。
+    ///
+    /// 只对单次 read/write 加锁不够：两个并发请求会**双双**读到同一个 `last`、
+    /// 双双通过「序号 == last + 1」检查，然后各追加一次 —— 分块文件多出一块，
+    /// 末块大小校验失败 → 错误分支 cleanup() 把整份上传删掉（实测 400 轮里 74.5%）。
+    /// 同一临时名的分块写入本就该串行，这里用一把持有整段的锁把它串起来。
+    pub fn lock_exclusive(&self) -> Result<HeaderGuard<'_>> {
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&self.real_path)
+            .map_err(|_| Error::WriteHeaderFail)?;
+
+        file.lock().map_err(|_| Error::WriteHeaderFail)?;
+
+        Ok(HeaderGuard {
+            file,
+            marker: std::marker::PhantomData,
+        })
+    }
+
     pub fn read(&self) -> Result<String> {
         let mut file = File::open(&self.real_path).map_err(|_| Error::ReadHeaderFail)?;
 
@@ -91,6 +115,54 @@ impl Header {
 
     pub fn exists(&self) -> bool {
         self.real_path.exists()
+    }
+}
+
+/// [`Header::lock_exclusive`] 的 RAII 守卫：构造即持锁，Drop 即释放。
+///
+/// 用它的那一段必须把「读断点 → 校验 → 追加 → 回写断点」整段包住 —— 这才是
+/// 同一临时名的分块写入的原子单位（对应 PHP 版里没有、但并发下必需的那把锁）。
+pub struct HeaderGuard<'a> {
+    file: File,
+    // 只用于 Debug 展示是哪个断点被锁住；锁随 file 释放
+    #[allow(dead_code)]
+    marker: std::marker::PhantomData<&'a Header>,
+}
+
+impl HeaderGuard<'_> {
+    /// 在锁内读断点。
+    pub fn read_index(&self) -> Result<u64> {
+        let mut content = String::new();
+        let mut file = &self.file;
+
+        file.seek(SeekFrom::Start(0))
+            .and_then(|_| file.read_to_string(&mut content))
+            .map_err(|_| Error::ReadHeaderFail)?;
+
+        content
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| Error::ReadHeaderFail)
+    }
+
+    /// 在锁内回写断点。
+    pub fn write_index(&self, index: u64) -> Result<()> {
+        let mut file = &self.file;
+
+        let result = (|| -> std::io::Result<()> {
+            file.set_len(0)?;
+            file.seek(SeekFrom::Start(0))?;
+            file.write_all(index.to_string().as_bytes())?;
+            file.flush()
+        })();
+
+        result.map_err(|_| Error::WriteHeaderFail)
+    }
+}
+
+impl Drop for HeaderGuard<'_> {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
     }
 }
 

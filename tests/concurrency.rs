@@ -9,15 +9,16 @@
 //!    刚被删掉的子目录里（压 `create_group_sub_dir` 的「抢建失败后再查一次」）；
 //! 2. 同内容去重：N 个线程同时上传**完全相同的内容**（压 `LocalStorage::publish`
 //!    的「目标已存在 → 丢弃临时文件」），最终只落一份成品；
-//! 3. 断点竞争：同一 tempName 下并发**重发已收块**（幂等分支）与并发**乱序补齐**
-//!    （跳变被拒 → 客户端重传），内容必须恰好被追加一次。
+//! 3. 断点竞争：同一 tempName 下并发**重发已收块**（幂等分支）、并发**首次同序号**
+//!    与并发**乱序补齐**（跳变被拒 → 客户端重传），内容必须恰好被追加一次。
 //!
 //! 子目录规则固定为 `Const`（= `"subdir"`，与 `protocol.rs` 的断言一致）：
 //! 所有线程必然落在同一个子目录里，也不依赖运行时刻。
 //!
-//! 其中一条用例是**回归钉子**：并发分块请求曾让 `Header::read` 撞上写入窗口，
-//! 再由 `cleanup()` 销毁整份上传（v1.0.2 已在 `header.rs` 修好，细节见该函数注释）。
-//! 它按 400 轮跑 —— 旧实现下每轮 6.75% 概率炸，回退必现。
+//! 其中两条用例是**回归钉子**，都按 [`RACE_ROUNDS`] 轮跑（旧实现下回退必现）：
+//! 并发分块请求曾让 `Header::read` 撞上写入窗口再被 `cleanup()` 销毁整份上传
+//! （v1.0.2 已修）；以及同序号**首次**并发发送会重复追加、末块校验失败整份被销毁
+//! （v1.0.3 已修）。细节见各自函数注释。
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Barrier};
@@ -35,7 +36,8 @@ use aetherupload::{
 const CHUNK: usize = 256;
 const THREADS: usize = 8;
 const ROUNDS: usize = 20;
-/// 乱序补齐那条是竞态回归钉子：400 轮 × 旧实现约 6.75%/轮 —— 真回退了必现，其余用例 20 轮够用。
+/// 两条竞态回归钉子（乱序补齐、同序号首传并发）跑这么多轮：400 轮 × 旧实现
+/// 6.75% / 74.5% 的单轮触发率 —— 真回退了必现；其余用例 20 轮够用。
 const RACE_ROUNDS: usize = 400;
 
 // ------------------------------------------------------------------ 测试脚手架
@@ -547,6 +549,116 @@ fn concurrent_out_of_order_fill_converges() {
             dir_entries(&harness.subdir()),
             vec![name],
             "round={round}：只应留一份成品"
+        );
+        harness.assert_no_headers(&format!("round={round}"));
+    }
+}
+
+// ------------------------------------------------------------------ 3c. 同序号首次并发
+
+/// **回归钉子**：同一序号**首次**并发发送必须被安全吸收 —— 一个真正写入，另一个走
+/// 幂等跳过；内容恰好被追加一次，成品逐字节一致。
+///
+/// 与上面那条「重发已收块」的区别：这里两个线程起跑前**谁都没收到过该块**（断点为 0），
+/// 双方都会通过 `last + 1` 检查 —— 这正是客户端超时重传与首个请求重叠时发生的事。
+///
+/// 历史（v1.0.3 前，数据销毁级）：只给单次读写加锁不够，「读断点 → 序号校验 →
+/// 追加 → 回写断点」整段不原子，两个线程双双读到同一个 `last`、双双追加 →
+/// `.part` 多出一块 → 末块 `check_size` 尺寸不符 → `Err` → `cleanup()` 销毁整份上传
+/// （fail-closed，不落错文件，但客户端白传且无法续传）。独立复现：两线程首传同一序号，
+/// 400 轮里 **298 轮（74.5%）上传被销毁**。
+///
+/// v1.0.3 已修：`Header::lock_exclusive()` 的 RAII guard 把整段包进同一把排他锁
+/// （`save_chunk` 里同一临时名的分块写入串行化）。这里按 [`RACE_ROUNDS`] 轮跑。
+#[test]
+fn concurrent_first_sends_of_the_same_chunk_never_double_append() {
+    let harness = Harness::new("first-send");
+    let uploader = harness.uploader();
+    let barrier = Barrier::new(2);
+
+    for round in 0..RACE_ROUNDS {
+        let _ = std::fs::remove_dir_all(harness.subdir());
+
+        let content = format!("first-send-round-{round}-").repeat(40).into_bytes();
+        let hash = md5_hex(&content);
+        let pre = preprocess(&uploader, "file", "first.txt", &content).expect("预处理应成功");
+        assert!(pre.saved_path.is_empty(), "round={round}：预处理不该秒传");
+
+        let chunks: Vec<&[u8]> = content.chunks(CHUNK).collect();
+        let total = chunks.len();
+        assert!(total >= 3, "round={round}：至少要三块，实际 {total}");
+
+        // 两个线程 Barrier 齐发第 1 块：此前谁都没收到过它（断点为 0）
+        let first_body = chunks[0];
+        let results: Vec<SaveChunkResult> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..2)
+                .map(|_| {
+                    let uploader = &uploader;
+                    let barrier = &barrier;
+                    let pre = &pre;
+                    let hash = hash.as_str();
+
+                    scope.spawn(move || {
+                        barrier.wait();
+                        save_chunk(uploader, pre, "file", hash, 1, total, first_body)
+                    })
+                })
+                .collect();
+
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("工作线程不应 panic"))
+                .collect()
+        });
+
+        for (worker, result) in results.iter().enumerate() {
+            assert_eq!(
+                result.error, None,
+                "round={round} worker={worker}：首传并发应被安全吸收（写入或幂等跳过）：{:?}",
+                result.error
+            );
+            assert!(
+                result.saved_path.is_empty(),
+                "round={round} worker={worker}：第 1 块不是末块，不该给出 savedPath"
+            );
+        }
+
+        // 补齐到末块：重复追加会让 `.part` 多出一块，末块的大小校验会在这里炸
+        for index in 2..=total {
+            let result = save_chunk(
+                &uploader,
+                &pre,
+                "file",
+                &hash,
+                index,
+                total,
+                chunks[index - 1],
+            );
+            assert_eq!(
+                result.error, None,
+                "round={round}：第 {index}/{total} 块失败：{:?}",
+                result.error
+            );
+
+            if index == total {
+                assert_eq!(result.saved_path, format!("file_subdir_{hash}.txt"));
+            }
+        }
+
+        let name = format!("{hash}.txt");
+        assert_eq!(
+            std::fs::read(harness.subdir().join(&name)).unwrap(),
+            content,
+            "round={round}：成品必须逐字节一致（重复追加会让尺寸/md5 对不上）"
+        );
+        assert_eq!(
+            dir_entries(&harness.subdir()),
+            vec![name],
+            "round={round}：只应留一份成品"
+        );
+        assert!(
+            !harness.part_path(&pre).exists(),
+            "round={round}：发布后不该留下 .part 残留"
         );
         harness.assert_no_headers(&format!("round={round}"));
     }

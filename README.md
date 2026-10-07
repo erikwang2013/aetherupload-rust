@@ -394,7 +394,7 @@ let runtime = runtime.with_storage(Arc::new(storage));
 | 配置载体 | `config/aetherupload.php` 数组 | `Config` 结构体（键名相同，编译期查错） |
 | 中间件 | 配置里写中间件类名（`middleware_*`） | 用宿主自己的中间件机制；路由路径仍取 `route_*` |
 | 每请求状态 | `RequestContext` + 每请求重建的 `ConfigMapper` 单例 | 分组快照显式传参，无全局状态 |
-| 断点文件并发 | `file_get_contents` 无锁读，可能与 `ftruncate` 撞窗口 | `read` 取**共享锁**（与写入的排他锁互斥）：并发分块不会读到空断点、更不会因此清掉整份上传 |
+| 断点文件并发 | 无锁读，可能与 `ftruncate` 撞窗口；「读断点 → 校验 → 追加 → 回写」也不原子 | 断点读取**共享锁**、同一临时名的分块写入**整段排他锁串行化**：并发分块既不会读到空断点，也不会双双通过序号检查后各追加一次（两处都会在末块校验失败时销毁整份上传） |
 | 错误文案 | 已知异常统一折叠成 `upload_error` 的译文 | 按错误种类给出具体译文（客户端只判 `error` 真值，协议兼容） |
 | MIME 探测 | `ext-fileinfo` 的 `mime_content_type()` | 内置魔数探测器（`MimeDetector` trait 可替换）；`.docx` 这类会按 `application/zip` 判定，与 fileinfo 的判断可能不同。探测窗口 512 字节，**落在窗口末尾的残缺多字节序列按文本处理** —— 中文 `.txt` 不会因为窗口切在汉字中间被误判成二进制 |
 | 子目录规则 | 服务器本地时区的 `date()` | **UTC**（零依赖下拿不到时区库）；只在月末月初的时区边界上有差异 |

@@ -340,8 +340,14 @@ impl UploadController {
             return Ok(ChunkFlow::Rejected(Error::UploadError.localized(locale)));
         };
 
+        // 同一临时名的分块写入串行化：整段「读断点 → 校验 → 追加 → 回写断点」都在
+        // 一把排他锁里。只给单次读写加锁不够 —— 两个并发请求会双双读到同一个 last、
+        // 双双通过「序号 == last + 1」检查，然后各追加一次（分块多一块 → 末块大小
+        // 校验失败 → 整份上传被 cleanup，实测 400 轮里 74.5%）。
+        let guard = partial.header.lock_exclusive()?;
+
         // 断点比对：重发已收块幂等跳过；跳变（中间缺块）报错且不清理
-        let last_chunk_index = partial.chunk_index()?;
+        let last_chunk_index = guard.read_index()?;
 
         if chunk_index <= last_chunk_index {
             return Ok(ChunkFlow::Accepted(String::new()));
@@ -358,7 +364,7 @@ impl UploadController {
         partial.filter_by_size(landed + chunk.len())?;
 
         partial.append(chunk.as_source())?;
-        partial.set_chunk_index(chunk_index)?;
+        guard.write_index(chunk_index)?;
 
         if chunk_index != chunk_total {
             return Ok(ChunkFlow::Accepted(String::new()));
@@ -392,7 +398,9 @@ impl UploadController {
             let _ = self.runtime.instant_index().set(&key, &saved_path);
         }
 
-        // 删断点文件（PHP 的 unset $partialResource->chunkIndex）
+        // 删断点文件（PHP 的 unset $partialResource->chunkIndex）；
+        // 先放锁再删，免得并发重发者拿着刚被 unlink 的 inode 的锁（无实害，更干净）
+        drop(guard);
         let _ = partial.clear_chunk_index();
 
         if event_complete {

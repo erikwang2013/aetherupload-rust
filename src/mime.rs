@@ -211,7 +211,8 @@ impl MimeDetector for MagicBytesDetector {
 fn probe_text(head: &[u8]) -> Option<&str> {
     match std::str::from_utf8(head) {
         Ok(text) => Some(text),
-        Err(err) if err.error_len().is_none() => {
+        // 整段就只是一截残缺序列（valid_up_to == 0，例如只有 [0xE4]）：那不是文本
+        Err(err) if err.error_len().is_none() && err.valid_up_to() > 0 => {
             std::str::from_utf8(&head[..err.valid_up_to()]).ok()
         }
         Err(_) => None,
