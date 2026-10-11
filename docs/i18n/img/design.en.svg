@@ -2,7 +2,7 @@
      aria-labelledby="designTitleEn designDescEn"
      font-family="-apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" fill="#dbe4ff">
   <title id="designTitleEn">Design — one mechanism solves three hard problems</title>
-  <desc id="designDescEn">Top: three hard problems side by side (a file over the server body limit cannot be sent, a dropped connection starts everything over, the same file gets transferred again and again). Middle: all three converge into one core mechanism — slice in the browser, append chunk by chunk to a temp file, name the published file by its content md5. Bottom: upload, resume, instant upload, dedup and integrity all grow out of that one mechanism. Right column: three design constraints — never read the whole file into memory; no table of where a file lives (savedPath is stateless); Redis and S3 are both optional.</desc>
+  <desc id="designDescEn">Top: three hard problems side by side (a file over the server body limit cannot be sent, a dropped connection starts everything over, the same file gets transferred again and again). Middle: all three converge into one core mechanism — slice in the browser, append chunk by chunk to a temp file, name the published file by its content md5. Bottom: upload, resume, instant upload, dedup and integrity all grow out of that one mechanism. Right column: three design constraints — never read the whole file into memory; no table of where a file lives (saved_path is stateless); Redis and S3 are both optional.</desc>
 
   <defs>
     <linearGradient id="auPetBody" gradientUnits="userSpaceOnUse" x1="0" y1="-36" x2="0" y2="20">
@@ -89,7 +89,7 @@
   <circle cx="676" cy="330" r="9" fill="#1b2742" stroke="#3b4a75"/>
   <text x="676" y="333.5" font-size="10.5" font-weight="700" fill="#86e6ff" text-anchor="middle">2</text>
   <text x="694" y="334" font-size="12" font-weight="700">No file-location table</text>
-  <text x="672" y="356" font-size="10.5" fill="#7f8db3">savedPath is stateless</text>
+  <text x="672" y="356" font-size="10.5" fill="#7f8db3">saved_path is stateless</text>
 
   <rect x="656" y="380" width="204" height="64" rx="12" fill="#141d33" stroke="#24304f"/>
   <circle cx="676" cy="404" r="9" fill="#1b2742" stroke="#3b4a75"/>
@@ -119,7 +119,7 @@
   <rect x="364" y="486" width="154" height="114" rx="12" fill="#141d33" stroke="#24304f"/>
   <text x="378" y="514" font-size="12.5" font-weight="700">Instant upload</text>
   <text x="378" y="540" font-size="11" fill="#7f8db3">Redis index hit</text>
-  <text x="378" y="558" font-size="11" fill="#7f8db3">return savedPath</text>
+  <text x="378" y="558" font-size="11" fill="#7f8db3">return saved_path</text>
 
   <rect x="526" y="486" width="154" height="114" rx="12" fill="#141d33" stroke="#24304f"/>
   <text x="540" y="514" font-size="12.5" font-weight="700">Dedup</text>

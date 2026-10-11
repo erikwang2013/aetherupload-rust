@@ -19,7 +19,7 @@
 
 ## 项目说明
 
-本项目移植自 PHP 大文件上传扩展包 [AetherUpload-Webman](https://github.com/erikwang2013/aetherupload-webman)（一脉相承自 [AetherUpload-Laravel](https://github.com/peinhu/AetherUpload-Laravel)），并为 Rust 生态重写了配置读取、并发处理与存储层。**协议与 PHP 版逐字段一致**：前端脚本原样可用（PHP 版发 urlencoded、库里自带的那份发 multipart，Rust 端两种都收），字段名（`resource_name` / `resource_chunk` / `chunk_index` …）、错误文案、`savedPath` 寻址、磁盘布局都没变。
+本项目是一个**纯 Rust 的大文件分片上传库**（当前协议 2.0）：浏览器把文件切片，逐块追加到服务端的临时文件，落盘时以内容 md5 命名 —— 上传、断线续传、秒传、去重、完整性校验共用同一套机制。内核与宿主框架解耦：同一份代码在原生 Rust（`Guard`）与 Axum、Actix Web、Rocket、Poem、Salvo、Warp、bee-rust、e-cat 下可用，默认 feature 零第三方依赖。自有前端脚本与示例页随库分发，协议细节见[协议（2.0）](#协议20)。
 
 **它解决什么**
 
@@ -31,7 +31,7 @@
 
 **注意事项**
 
-- 分组名**不能包含下划线** —— 它参与 `savedPath` 的三段式编码，含下划线会让解码错位、该分组下的资源永久 404。配置与上传两个阶段都会被拒。
+- 分组名**不能包含下划线** —— 它参与 `saved_path` 的三段式编码，含下划线会让解码错位、该分组下的资源永久 404。配置与上传两个阶段都会被拒。
 - 分组目录**必须先建好**（`aetherupload groups` 或库 API）：内核建子目录用的是非递归 `mkdir`，父目录缺失时会报笼统的上传错误，排查起来很难看出是目录问题。
 - 秒传索引与实际文件是两份数据。删除资源请走 `Runtime::delete_resource()`（联动清理秒传记录），否则会留下死链；建议每天跑一次 `build` 重建。
 - `x_accel_redirect` 是前置服务器（nginx）概念，只对 local 驱动生效；s3 驱动下读路径是 302 预签名 URL。
@@ -66,8 +66,8 @@
 **工程特性**
 
 - **默认 feature 零第三方依赖**：MD5（RFC 1321 向量锚定）、JSON 输出、769 条 MIME 表与魔数探测、目录寻址全部内置；Redis 客户端与 S3 传输都以 trait 注入。
-- **同步内核**：与 PHP 语义一致，`cargo test` 不需要运行时。大文件末块要算整份 md5，在意 worker 占用的宿主把调用放进 `tokio::task::spawn_blocking` 即可。
-- **没有全局状态**：PHP 版靠「每请求重建 ConfigMapper 快照」避免常驻进程下串组；Rust 版直接把分组快照作为参数传下去，同样的隔离，不需要锁。
+- **同步内核**：`cargo test` 不需要运行时。大文件末块要算整份 md5，在意 worker 占用的宿主把调用放进 `tokio::task::spawn_blocking` 即可。
+- **没有全局状态**：分组快照作为参数逐请求传下去，常驻进程下也不会串组，不需要锁。
 - **内存不装整个文件**：分块逐块追加；末块按 64KB 缓冲流式算 md5；本地下发是流式响应。
 
 **支持的框架**
@@ -93,22 +93,22 @@ aetherupload-rust/
 ├── src/
 │   ├── lib.rs                    crate 文档与再导出
 │   ├── runtime.rs                运行时绑定：配置 + 存储 / 秒传 / 事件 / MIME 探测器的注入点
-│   ├── config.rs                 配置结构 + 分组快照（PHP ConfigMapper 的 Rust 形态）
+│   ├── config.rs                 配置结构 + 分组快照
 │   ├── controller/
-│   │   ├── upload.rs             preprocess / saveChunk：协议与安全语义逐条照搬
-│   │   └── resource.rs           display / download：三条读路径 + 内联黑名单
+│   │   ├── upload.rs             preprocess / save_chunk：上传用例（协议与安全语义）
+│   │   └── resource.rs           display / download：三条读路径 + 内联黑名单 + 问题响应
 │   ├── guard.rs                  原生 Rust 入口：Guard 请求守卫 + 路由判定表
 │   ├── form.rs                   表单载体（multipart 解析的产物 → 内核入参）
 │   ├── partial.rs                分块文件本体：路径、追加、改名、大小与类型校验
 │   ├── header.rs                 断点状态文件：只存一个 chunkIndex
 │   ├── resource.rs               成品文件对象（上传完成事件的参数）
-│   ├── saved_path.rs             savedPath 三段式无状态寻址
+│   ├── saved_path.rs             saved_path 三段式无状态寻址
 │   ├── instant.rs                秒传索引：InstantStore trait + 键格式 + 内存实现
 │   ├── storage/                  存储驱动：Storage trait + local（成品落地与读取）+ s3 + sigv4
-│   ├── mime.rs                   MIME 表（769 条，搬自 PHP 版）+ 魔数内容探测器
+│   ├── mime.rs                   MIME 表（769 条）+ 魔数内容探测器
 │   ├── md5.rs                    手写 MD5（RFC 1321 测试向量锚定）
-│   ├── json.rs                   上传响应的 JSON 输出（字段名与 PHP 一致）
-│   ├── i18n.rs                   消息目录（逐条对齐 PHP 翻译文件）
+│   ├── json.rs                   上传结果（snake_case）与问题响应的 JSON 输出
+│   ├── i18n.rs                   消息目录（中 / 英）：上传结果与问题的本地化文案
 │   ├── error.rs                  错误类型（对外只暴露「已知错误」）
 │   ├── events.rs                 上传完成事件（EventSink trait）
 │   ├── util.rs                   路径安全、临时名、下载名消毒、链接
@@ -149,7 +149,7 @@ aetherupload-rust/
 <img src="https://raw.githubusercontent.com/erikwang2013/aetherupload-rust/main/docs/design.svg" alt="AetherUpload-Rust 功能设计">
 
 - **磁盘上永远只有三类文件**：`*.part`（分块）、`_header/<临时名>`（断点，只存一个 chunkIndex）、`<md5>.<ext>`（成品）。没有数据库表，没有元数据文件。
-- **无状态寻址**：客户端拿到 `savedPath`（`分组_子目录_文件名`）原样回传，服务端拆三段即可定位，不需要记「谁传了什么」。
+- **无状态寻址**：客户端拿到 `saved_path`（`分组_子目录_文件名`）原样回传，服务端拆三段即可定位，不需要记「谁传了什么」。
 - **秒传索引可选 + 每条记录独立 TTL**：不接 Redis 的站点照样能上传（只是秒传失效）；接了 Redis 的站点，每条记录 `SETEX` 各自过期，既不共享过期时间，也不会因为持续上传而无限膨胀。
 - **一致性交给运维命令**：`build`（按磁盘现状重建秒传索引）与 `clean`（按 mtime 回收临时文件）各跑一条 cron，比在请求路径上加锁便宜得多。
 - **写路径同步、内存可控**：追加是 `append` 语义的顺序写，末块校验后改名落盘；整个过程不把整份文件读进内存。
@@ -162,14 +162,66 @@ aetherupload-rust/
 
 | 路由 | 方法 | 入口 | 响应 |
 |---|---|---|---|
-| `route_preprocess`（默认 `/aetherupload/preprocess`） | POST | `UploadController::preprocess` | JSON：`chunkSize` / `resourceTempBaseName` / `groupSubDir` / `resourceExt` / `savedPath` |
-| `route_uploading`（默认 `/aetherupload/uploading`） | POST | `UploadController::save_chunk` | JSON：`savedPath`（末块或秒传命中时非空） |
+| `route_preprocess`（默认 `/aetherupload/preprocess`） | POST | `UploadController::preprocess` | 上传结果：`chunk_size` / `resource_temp_base_name` / `group_sub_dir` / `resource_ext` / `saved_path` |
+| `route_uploading`（默认 `/aetherupload/uploading`） | POST | `UploadController::save_chunk` | 上传结果：`saved_path`（末块或秒传命中时非空） |
 | `route_display`（默认 `/aetherupload/display/{saved_path}`） | GET | `ResourceController::display` | 文件本体 / 302 预签名 / X-Accel-Redirect |
 | `route_download`（默认 `/aetherupload/download/{saved_path}/{new_name}`） | GET | `ResourceController::download` | 同上，且强制附件 |
 
-上传接口的错误一律 **HTTP 200 + `error` 字段**（与 PHP 版一致，前端按 `error` 真值判断）；读路径的失败是 404 文本（`display fail` / `download fail`）。
+上传接口成功时返回 snake_case 的**上传结果**（HTTP 200），失败时返回 RFC 9457 **问题响应**（真实状态码 + 稳定 `code`）—— 完整字段与状态码 × code 映射见下节[协议（2.0）](#协议20)。读路径的失败（404 / 400）同样是问题响应。
 
-`route_preprocess` 的表单编码两种都收：**multipart**（库里自带的 `aetherupload-all.js` 发它，与 `uploadChunk` 同一种形态）与 **urlencoded**（PHP 原版脚本发它，第三方客户端也常见），与 PHP 的 `request()->input()` 同宽 —— 解出来的字段名一样，重名取最后一个。`route_uploading` 一定带文件字段，只收 multipart。
+`route_preprocess` 的表单编码两种都收：**multipart**（库里自带的 `aetherupload-all.js` 发它，与 `uploadChunk` 同一种形态）与 **urlencoded**（第三方客户端也常见）—— 解出来的字段名一样，重名取最后一个。`route_uploading` 一定带文件字段，只收 multipart。
+
+## 协议（2.0）
+
+**端点**：路径与配置项不变，请求字段名本就是 snake_case，保持不变。
+
+| # | 方法 + 路径 | 请求 |
+|---|---|---|
+| 1 | `POST {route_preprocess}` | 表单（urlencoded 或 multipart 都收）：`resource_name`、`resource_size`、`resource_hash?`、`group`、`locale?` |
+| 2 | `POST {route_uploading}` | multipart：`resource_chunk`（文件）、`chunk_total`、`chunk_index`、`resource_temp_basename`、`resource_ext`、`group_subdir`、`group`、`resource_hash?`、`locale?` |
+| 3 | `GET {route_display}/{saved_path}` | 无体 |
+| 4 | `GET {route_download}/{saved_path}/{new_name}` | 无体 |
+
+**上传结果**：HTTP 200 + `application/json`，字段 snake_case，没有 `error` 字段。
+
+```text
+preprocess → {"chunk_size":1000000,"resource_temp_base_name":"34c0fbcc4b7b1258",
+              "group_sub_dir":"202610","resource_ext":"txt","saved_path":""}
+save_chunk → {"saved_path":""}                          // 中间块：还没完成
+             {"saved_path":"file_202610_<md5>.txt"}     // 末块落盘 / 秒传命中
+```
+
+**问题响应**：失败一律 RFC 9457 `application/problem+json`，HTTP 状态码就是真实结果，不再兜底成 200。
+
+```json
+{"type":"about:blank","title":"分块序号不连续，期望第 5 块","status":409,"code":"chunk_out_of_order","expected_index":5}
+```
+
+`title` 按请求里的 `locale`（缺省 `en`）本地化；`code` 稳定、snake_case、可被程序判断，新增失败场景就新增 code。
+
+| 场景 | HTTP | code |
+|---|---|---|
+| 参数缺失 / 非法（name、size、group、chunk_total、chunk_index、temp_basename、ext、subdir…） | 400 | `invalid_parameter` |
+| 分组未配置，或名字含下划线 | 400 | `invalid_group` |
+| 未预处理 / 临时资源已不存在（`.part` 与断点都没了） | 409 | `upload_not_prepared` |
+| 分块序号不连续（既不是 `last+1`，也不是合法末块） | 409 | `chunk_out_of_order`＋扩成员 `expected_index` |
+| 累计写入超过声明的 `resource_size`，或单块超过 `chunk_size` | 413 | `payload_too_large` |
+| 末块整份 md5 与声明不符（`lax_mode=false`） | 422 | `hash_mismatch` |
+| 扩展名 / MIME 不在允许集 | 415 | `unsupported_media_type` |
+| 磁盘 / IO / 索引等内部失败 | 500 | `internal_error` |
+| display / download 找不到文件 | 404 | `resource_not_found` |
+| display / download 的 `saved_path` / `new_name` 非法 | 400 | `invalid_parameter` |
+| 秒传索引不可用 / 未命中 | —— 不算失败：按未命中继续，绝不报错 | —— |
+
+检查顺序：参数 → 分组 → 临时资源 → 序号 → 大小 → 末块（MIME → md5）。重发**服务端尚未收到的那一块**（`index == last+1`）幂等接受；重发**已落盘**的块返回 409 `chunk_out_of_order`。display / download 的失败也是问题响应，成功路径（文件本体 / 302 / X-Accel-Redirect）不变。
+
+**前端脚本与示例页**
+
+- `assets/aetherupload-all.js` 的 `preprocess` 与 `uploadChunk` 都发 **multipart**（`FormData` + `processData` / `contentType: false`）；
+- 成功读 snake_case：`rst.saved_path` / `rst.chunk_size` / `rst.resource_temp_base_name` / `rst.group_sub_dir` / `rst.resource_ext`；
+- 失败解析 problem+json，把 `title` 显示给用户：`4xx` 是硬失败（不再重试），`5xx` / 网络错误沿用现有重试语义；
+- `chunk_out_of_order` 特判：`expected_index > 本块序号` → 该块其实已落，静默推进；`expected_index == 本块` → 重发本块；`expected_index < 本块` → 服务端状态已丢，从最近可续处失败退出（显示 `title`）；
+- 示例页的 `#aetherupload-wrapper` 容器契约不变。
 
 ## 上传生命周期
 
@@ -177,9 +229,9 @@ aetherupload-rust/
 
 主路径只有四步：**预处理 → 分块（循环）→ 最后一块校验 → 落盘**。
 
-1. **预处理**（`preprocess`）：校验参数与分组 → 生成临时名与子目录 → 秒传判定（命中直接返回 `savedPath`，一个分块都不用传）→ 建空的 `.part`，把 `chunkIndex=0` 写进 `_header`。
-2. **分块**（`saveChunk`，循环）：每块的顺序固定为「校验 → 追加 → 回写 chunkIndex」。重发同一序号会被幂等跳过；序号跳变或分块被截断只返回错误，**不会清理** `.part` 与 header，所以弱网下客户端可以持续重试直到补上缺的那一块。
-3. **最后一块**：校验整份大小 → 按真实内容复核 MIME → 触发「上传完成前」事件 → 流式重算整份 md5 → 与客户端声明的 hash 比对（`lax_mode` 关闭时），不一致整份丢弃。
+1. **预处理**（`preprocess`）：校验参数与分组 → 生成临时名与子目录 → 秒传判定（命中直接返回 `saved_path`，一个分块都不用传）→ 建空的 `.part`，把 `chunkIndex=0` 写进 `_header`。
+2. **分块**（`save_chunk`，循环）：每块的顺序固定为「校验 → 追加 → 回写 chunkIndex」。重发服务端尚未收到的那一块（`index == last+1`）幂等接受；重发已落盘的块或序号跳变返回 409 `chunk_out_of_order`，都不会清理 `.part` 与 header，所以弱网下客户端可以持续重试直到补上缺的那一块。
+3. **最后一块**：校验整份大小 → 按真实内容复核 MIME → 触发「上传完成前」事件 → 流式重算整份 md5 → 与客户端声明的 hash 比对（`lax_mode` 关闭时），不一致整份丢弃（422 `hash_mismatch`）。
 4. **落盘**：改名成 `<md5>.<ext>`（同 hash 已存在则去重丢弃本次临时文件）→ 写秒传索引 → 删断点文件 → 触发「上传完成」事件。
 
 真正会清理已拼好进度的只有两种情况：末块校验不通过（整份丢弃），以及页面关闭后由 `clean` 按 mtime 回收。
@@ -200,13 +252,13 @@ feature 一览：`axum` / `actix` / `rocket` / `poem` / `salvo` / `warp` / `bee-
 
 ## 配置结构
 
-配置是 Rust 结构体，字段名与 PHP 版逐字相同：
+配置是 Rust 结构体（字段名与 1.x 一致，配置不属于协议 2.0 的改动面）：
 
 ```rust
 use std::collections::BTreeMap;
 use aetherupload::config::{Config, GroupConfig, SubdirRule};
 
-let mut config = Config::default();          // 默认值与 PHP config/aetherupload.php 一致
+let mut config = Config::default();          // 默认配置
 
 config.root_dir = "storage/app/aetherupload".into();  // 上传根目录（相对项目根）
 config.chunk_size = 1_000_000;               // 分块大小（字节），建议 1MB～4MB
@@ -261,7 +313,7 @@ match guard.routes().classify(method, path) {
 }
 ```
 
-表单字段用 `FormData::from_pairs(...)`（文本字段）+ `push_file("resource_chunk", ChunkBody::Bytes(..))` 组装 —— 重名取最后一个，与 PHP 解析表单的语义一致。若自己的服务器只拿到 `application/x-www-form-urlencoded` 的原始串（PHP 原版脚本的 `preprocess` 就是这样），直接喂 `FormData::from_urlencoded(...)`，不必自己解 percent 编码。
+表单字段用 `FormData::from_pairs(...)`（文本字段）+ `push_file("resource_chunk", ChunkBody::Bytes(..))` 组装 —— 重名取最后一个。若自己的服务器只拿到 `application/x-www-form-urlencoded` 的原始串（`preprocess` 两种编码都收），直接喂 `FormData::from_urlencoded(...)`，不必自己解 percent 编码。
 
 `ResourceResponse` 的三种形态（`Redirect` / `AccelRedirect` / `ServeFile`）各自带好 `status()` 与 `headers()`；`ServeFile` 的附件名在 `download_name` 里，附件头用 `aetherupload::controller::attachment_disposition(name)` 生成（八个适配器也是这么做的）—— 完整示例见 `tests/guard.rs` 里的 `resource_response_to_http()`。
 
@@ -304,7 +356,7 @@ let code = console::build_redis_hashes(&runtime, &mut say);    // 需要接了 I
 let code = console::clean_up_directory(&runtime, &mut say, 2); // 2 天前
 ```
 
-建议的 cron（与 PHP 版一致）：
+建议的 cron：
 
 ```cron
 0 0 * * * /路径/aetherupload clean 1
@@ -330,10 +382,10 @@ impl InstantStore for MyRedis {
 let runtime = runtime.with_instant(Arc::new(MyRedis(/* ... */)));
 ```
 
-- 键格式与 PHP 版一致：`aetherupload:resource:<分组>_<hash>`，每条独立 TTL（默认 7 天，`resource_redis_expire` 可改）。
-- 也兼容旧版单 hash（`aetherupload_resource`）的回退读取 —— 从 PHP 版迁移过来的站点不用先跑一遍 `build`。
-- 旧版回退按**能力位**触发（`InstantStore::supports_legacy_fallback`，默认 `false`）：没声明就不发那次注定为空的往返，未命中只花一次 `GET`；声明了的实现（仓库 CLI 里的 RESP 客户端）行为与不带能力位时一字不差。
-- 没接 Redis 却开了 `instant_completion` 时**会报错**（而不是让秒传静默失效），与 PHP 版同一取向。
+- 键格式：`aetherupload:resource:<分组>_<hash>`，每条独立 TTL（默认 7 天，`resource_redis_expire` 可改）。
+- 更早部署写入的单 hash 旧键 `aetherupload_resource`：Redis 里仍有它时，声明了 `supports_legacy_fallback` 的 store 会回退读取。
+- 该能力位默认 `false`：没声明就不发那次注定为空的往返，未命中只花一次 `GET`；声明了的实现（仓库 CLI 里的 RESP 客户端）行为与不带能力位时一字不差。
+- 没接 Redis 却开了 `instant_completion` 时**会报错**，而不是让秒传静默失效。
 - 测试与示例可以用内置的 `MemoryInstantStore`。
 
 ## 可选对象存储（S3 兼容）
@@ -384,25 +436,44 @@ let runtime = runtime.with_storage(Arc::new(storage));
 
 ## 安全性
 
-上传前用白名单 + 黑名单过滤扩展名，上传后按**真实内容**（魔数探测器）复核 MIME —— 白名单直接限制保存扩展名，黑名单默认屏蔽常见的可执行文件扩展名；白名单为空时另有可执行扩展名的硬拒列表兜底。客户端提交的路径分量（`group_subdir` / `resource_temp_basename` / `resource_ext`）一律过安全字符集校验，`savedPath` 解码后逐段校验 —— 目录穿越进不来。可内联渲染的扩展名（svg / html / js / …）在下发时强制转附件并带 `X-Content-Type-Options: nosniff`。
+上传前用白名单 + 黑名单过滤扩展名，上传后按**真实内容**（魔数探测器）复核 MIME —— 白名单直接限制保存扩展名，黑名单默认屏蔽常见的可执行文件扩展名；白名单为空时另有可执行扩展名的硬拒列表兜底。客户端提交的路径分量（`group_subdir` / `resource_temp_basename` / `resource_ext`）一律过安全字符集校验，`saved_path` 解码后逐段校验 —— 目录穿越进不来。可内联渲染的扩展名（svg / html / js / …）在下发时强制转附件并带 `X-Content-Type-Options: nosniff`。
 
 虽然做了诸多安全工作，但恶意文件上传是防不胜防的，建议正确设置上传目录权限，确保相关程序对资源文件没有执行权限。
 
-## 与 PHP 版的差异
+## 行为约束
 
-| 项 | PHP 版（aetherupload-webman） | Rust 版 |
-|---|---|---|
-| 分发方式 | `composer require` 自动分发配置 / 路由 / 命令 / 前端脚本 | crate 依赖 + 显式挂路由（`integrations::*::routes`）+ 自带 `assets/` 前端脚本 |
-| 配置载体 | `config/aetherupload.php` 数组 | `Config` 结构体（键名相同，编译期查错） |
-| 中间件 | 配置里写中间件类名（`middleware_*`） | 用宿主自己的中间件机制；路由路径仍取 `route_*` |
-| 每请求状态 | `RequestContext` + 每请求重建的 `ConfigMapper` 单例 | 分组快照显式传参，无全局状态 |
-| 断点文件并发 | 无锁读，可能与 `ftruncate` 撞窗口；「读断点 → 校验 → 追加 → 回写」也不原子 | 断点读取**共享锁**、同一临时名的分块写入**整段排他锁串行化**：并发分块既不会读到空断点，也不会双双通过序号检查后各追加一次（两处都会在末块校验失败时销毁整份上传） |
-| 错误文案 | 已知异常统一折叠成 `upload_error` 的译文 | 按错误种类给出具体译文（客户端只判 `error` 真值，协议兼容） |
-| MIME 探测 | `ext-fileinfo` 的 `mime_content_type()` | 内置魔数探测器（`MimeDetector` trait 可替换）；`.docx` 这类会按 `application/zip` 判定，与 fileinfo 的判断可能不同。探测窗口 512 字节，**落在窗口末尾的残缺多字节序列按文本处理** —— 中文 `.txt` 不会因为窗口切在汉字中间被误判成二进制 |
-| 子目录规则 | 服务器本地时区的 `date()` | **UTC**（零依赖下拿不到时区库）；只在月末月初的时区边界上有差异 |
-| 伪随机临时名 | `random_bytes()`（CSPRNG） | `/dev/urandom`（同一 CSPRNG）；读不到时退化为时间 ^ pid 的 splitmix64 |
-| HTTP Range | webman 不实现 Range（靠 `x_accel_redirect` 交给 nginx） | 同样不实现，同样交给前置服务器（Salvo 的 `NamedFile` 会顺带支持 Range） |
-| 前端 i18n | 13 种语言的 README 与架构图 | 中 / 英双份 README 与图（`docs/i18n/`） |
+- **不实现 HTTP Range** —— 断点下载 / 视频拖动请开 `x_accel_redirect` 交给前置服务器，或由宿主自行处理；
+- **同一临时名的分块写入以排他锁串行化** —— 同一份上传的并发写不会交错；
+- **末块按真实内容的魔数复核类型**，不只信扩展名（`MimeDetector` trait 可替换）；
+- **子目录按 UTC 月份命名**；临时名用系统 CSPRNG 生成。
+
+## 从 1.x 迁移
+
+- **请求不变**：四条路由、路径配置项、请求字段名与表单编码（urlencoded / multipart 都收）都不动。
+- **响应字段重命名**（camelCase → snake_case）：见下表。
+
+| 1.x | 2.0 |
+|---|---|
+| `chunkSize` | `chunk_size` |
+| `resourceTempBaseName` | `resource_temp_base_name` |
+| `groupSubDir` | `group_sub_dir` |
+| `resourceExt` | `resource_ext` |
+| `savedPath` | `saved_path` |
+
+- **失败形态**：1.x 上传接口一律 HTTP 200 + `error` 字段；2.0 改为真实 HTTP 状态码 + RFC 9457 问题响应（`application/problem+json`，带稳定 `code`），`error` 字段不再存在；读路径的 404 纯文本（`display fail` / `download fail`）同样变成问题响应。
+- **行为变更（唯一一处）**：`chunk_out_of_order`。1.x 对分块序号不连续静默接受（返回 200 空 `saved_path`）；2.0 返回 `409` + `code` + `expected_index`。
+- **自带前端脚本已同步**：`assets/aetherupload-all.js` 与示例页已按 2.0 更新（读 snake_case、解析 problem+json、特判 409），升级后直接可用；第三方客户端按本节的表与失败形态调整即可。
+- **升级不用迁数据**：磁盘布局（`<root>/storage/app/aetherupload/{file/<子目录>/<md5>.<ext>, _header/<临时名>, *.part}`）与 `saved_path` 形态（`分组_子目录_文件名`）不变，替换版本即可，存量成品与断点继续可用。
+
+### Rust API 变更
+
+| 1.x | 2.0 |
+|---|---|
+| `UploadController::preprocess` / `save_chunk` 返回「恒 200 的响应结构」（含 `error` 字段） | 返回 `Result<PreprocessOk, Problem>` / `Result<SaveChunkOk, Problem>` |
+| `ResourceResponse::NotFound(String)`（纯文本） | `ResourceResponse::Problem(Problem)`（400 / 404 / 500 问题响应） |
+| `Guard::preprocess` / `save_chunk` 返回恒 200 的 `JsonBody` | `JsonBody` 带真实 `status` 与 `content_type` |
+| `Problem` 无处可取 | `aetherupload::json::Problem` 与 crate 根 `aetherupload::Problem` 均可用；带 `status()` / `content_type()` / `to_json()` |
+| warp：`routes()` 的 `Error = Rejection` | `Error = Infallible`（宿主不再需要处理拒绝） |
 
 ## 项目宠物
 
@@ -418,7 +489,7 @@ let runtime = runtime.with_storage(Arc::new(storage));
      '.__.___.__.'    ▣    右侧方块 = 正飞来的下一个分块
 ```
 
-形象文件在 `docs/pet.svg`（从 PHP 版项目原样搬来），ASCII 版与 SVG 都以常量形式打进库里（`aetherupload::pet`）—— 示例页的 favicon 与标题图标、四张架构图里的吉祥物、CLI 的 `aetherupload pet` 用的都是同一份形象。
+形象文件在 `docs/pet.svg`，ASCII 版与 SVG 都以常量形式打进库里（`aetherupload::pet`）—— 示例页的 favicon 与标题图标、四张架构图里的吉祥物、CLI 的 `aetherupload pet` 用的都是同一份形象。
 
 ## 开源不易，欢迎支持 / Open Source is Not Easy, Your Support is Welcome
 

@@ -2,7 +2,7 @@
      aria-labelledby="reqTitle reqDesc"
      font-family="-apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" fill="#dbe4ff">
   <title id="reqTitle">请求周期 — 一次上传请求走哪几步</title>
-  <desc id="reqDesc">纵向主线：客户端 POST multipart → 路由分发（Guard::classify 或框架路由，四条路由）→ 参数校验 → 分组快照 Config::resolve_group → 分成两支：preprocess 做秒传判定并建 .part 与 chunkIndex=0 后返回 JSON；saveChunk 走断点比对、增量大小校验、追加、回写 chunkIndex，末块做大小、真实 MIME、整份 md5 校验后改名落盘、写秒传、删断点。右侧一列是 display / download 的读路径（s3 预签名 302、X-Accel-Redirect、本地流式，内联类型强制附件）。底部是响应形态：错误一律 HTTP 200 加 error 字段。</desc>
+  <desc id="reqDesc">纵向主线：客户端 POST multipart → 路由分发（Guard::classify 或框架路由，四条路由）→ 参数校验 → 分组快照 Config::resolve_group → 分成两支：preprocess 做秒传判定并建 .part 与 chunkIndex=0 后返回上传结果；save_chunk 走断点比对、增量大小校验、追加、回写 chunkIndex，末块做大小、真实 MIME、整份 md5 校验后改名落盘、写秒传、删断点。右侧一列是 display / download 的读路径（s3 预签名 302、X-Accel-Redirect、本地流式，内联类型强制附件）。底部是响应形态：成功 200 + snake_case 上传结果，失败是问题响应（真实状态码 + code）。</desc>
 
   <defs>
     <linearGradient id="auPetBody" gradientUnits="userSpaceOnUse" x1="0" y1="-36" x2="0" y2="20">
@@ -44,7 +44,7 @@
 
   <!-- 主线上段：四条路由共用 -->
   <rect x="40" y="100" width="580" height="40" rx="12" fill="#141d33" stroke="#24304f"/>
-  <text x="60" y="125" font-size="12.5">客户端 POST multipart —— 按 chunkSize 顺序逐块提交（aetherupload-all.js）</text>
+  <text x="60" y="125" font-size="12.5">客户端 POST multipart —— 按 chunk_size 顺序逐块提交（aetherupload-all.js）</text>
   <path d="M330 140 V156" stroke="#4fd1ff" stroke-width="1.8" fill="none" marker-end="url(#auArrow)"/>
 
   <rect x="40" y="158" width="580" height="76" rx="12" fill="#141d33" stroke="#30406a"/>
@@ -69,23 +69,23 @@
   <rect x="40" y="384" width="270" height="36" rx="10" fill="#1b2742" stroke="#62a7ff"/>
   <text x="56" y="407" font-size="12.5" font-weight="700">preprocess（POST）</text>
   <rect x="340" y="384" width="280" height="36" rx="10" fill="#1b2742" stroke="#62a7ff"/>
-  <text x="356" y="407" font-size="12.5" font-weight="700">saveChunk（POST · 循环）</text>
+  <text x="356" y="407" font-size="12.5" font-weight="700">save_chunk（POST · 循环）</text>
 
   <!-- 上支：preprocess -->
   <rect x="40" y="430" width="270" height="46" rx="12" fill="#141d33" stroke="#24304f"/>
   <text x="56" y="450" font-size="12">① 秒传判定</text>
-  <text x="56" y="468" font-size="11" fill="#7f8db3">命中 → 直接返回 savedPath</text>
+  <text x="56" y="468" font-size="11" fill="#7f8db3">命中 → 直接返回 saved_path</text>
   <rect x="40" y="484" width="270" height="34" rx="12" fill="#141d33" stroke="#24304f"/>
   <text x="56" y="506" font-size="11.5">② 建空 .part + chunkIndex = 0</text>
   <rect x="40" y="526" width="270" height="62" rx="12" fill="#141d33" stroke="#24304f"/>
-  <text x="56" y="546" font-size="12">③ 返回 JSON</text>
-  <text x="56" y="564" font-size="11" fill="#7f8db3">chunkSize · resourceTempBaseName</text>
-  <text x="56" y="580" font-size="11" fill="#7f8db3">· groupSubDir</text>
+  <text x="56" y="546" font-size="12">③ 返回上传结果</text>
+  <text x="56" y="564" font-size="11" fill="#7f8db3">chunk_size · resource_temp_base_name</text>
+  <text x="56" y="580" font-size="11" fill="#7f8db3">· group_sub_dir</text>
 
   <!-- 下支：saveChunk -->
   <rect x="340" y="430" width="280" height="50" rx="12" fill="#141d33" stroke="#24304f"/>
   <text x="356" y="450" font-size="12">断点比对（chunkIndex）</text>
-  <text x="356" y="468" font-size="11" fill="#7f8db3">重发幂等跳过 · 跳变报错且不清理</text>
+  <text x="356" y="468" font-size="11" fill="#7f8db3">重发未收块幂等 · 已落块 / 跳变 → 409</text>
   <rect x="340" y="488" width="280" height="32" rx="12" fill="#141d33" stroke="#24304f"/>
   <text x="356" y="509" font-size="11.5">增量大小校验（已落盘 + 本块）</text>
   <rect x="340" y="526" width="280" height="32" rx="12" fill="#141d33" stroke="#24304f"/>
@@ -131,8 +131,8 @@
 
   <rect x="644" y="470" width="216" height="56" rx="12" fill="#0e1526" stroke="#3b4a75" stroke-dasharray="7 5"/>
   <text x="660" y="490" font-size="11" fill="#7f8db3">失败 → 404</text>
-  <text x="660" y="507" font-size="10.5" fill="#7f8db3">「display fail」</text>
-  <text x="660" y="524" font-size="10.5" fill="#7f8db3">「download fail」</text>
+  <text x="660" y="507" font-size="10.5" fill="#7f8db3">问题响应（problem+json）</text>
+  <text x="660" y="524" font-size="10.5" fill="#7f8db3">code: resource_not_found</text>
 
   <!-- 左下角：宠物与汇入响应 -->
   <g transform="translate(250,655) scale(0.95)">
@@ -158,7 +158,7 @@
   <!-- 响应形态 -->
   <rect x="40" y="770" width="820" height="76" rx="14" fill="#141d33" stroke="#30406a"/>
   <text x="60" y="796" font-size="13" font-weight="700">响应形态</text>
-  <text x="60" y="818" font-size="12">{ "error": 0, … } —— 上传接口一律 HTTP 200，错误放在 error 字段（与 PHP 版一致）</text>
+  <text x="60" y="818" font-size="12">{ "saved_path": "…" } —— 成功 200 + snake_case 上传结果；失败 = 问题响应（真实状态码 + code）</text>
   <!-- 版权角标：全图统一 © erik.xyz -->
   <text x="884" y="866" text-anchor="end" font-family="-apple-system, 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" fill="#7f8db3" opacity="0.85">© erik.xyz</text>
 </svg>

@@ -2,7 +2,7 @@
      aria-labelledby="lifeTitleEn lifeDescEn"
      font-family="-apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" fill="#dbe4ff">
   <title id="lifeTitleEn">Upload lifecycle — a four-step main path with two bypasses</title>
-  <desc id="lifeDescEn">Main path, four numbered nodes: 1 Preprocess (validate params and group, create the empty .part file with chunkIndex=0, check the instant-upload index), 2 Chunking loop (compare the resume state, incremental size check, append and write back chunkIndex), 3 Last-chunk checks (whole-file size, real MIME, whole-file md5 — on mismatch the whole upload is dropped), 4 Publish (rename to md5, dedup, write the instant index, delete the header file). Two bypasses: an instant-upload hit returns savedPath during preprocess without sending any chunk; an interruption returns an error but never cleans .part or the header, so the client re-sends the gap. The bottom bar explains when cleanup does happen: failed last-chunk validation, or aetherupload clean N reclaiming stale temp files by mtime.</desc>
+  <desc id="lifeDescEn">Main path, four numbered nodes: 1 Preprocess (validate params and group, create the empty .part file with chunkIndex=0, check the instant-upload index), 2 Chunking loop (compare the resume state, incremental size check, append and write back chunkIndex), 3 Last-chunk checks (whole-file size, real MIME, whole-file md5 — on mismatch the whole upload is dropped), 4 Publish (rename to md5, dedup, write the instant index, delete the header file). Two bypasses: an instant-upload hit returns saved_path during preprocess without sending any chunk; an interruption returns an error but never cleans .part or the header, so the client re-sends the gap. The bottom bar explains when cleanup does happen: failed last-chunk validation, or aetherupload clean N reclaiming stale temp files by mtime.</desc>
 
   <defs>
     <linearGradient id="auAccent" x1="0" y1="0" x2="1" y2="1">
@@ -37,7 +37,7 @@
 
   <!-- bypass 1: instant upload -->
   <path d="M138 180 C138 112 762 112 762 178" stroke="#8f7cff" stroke-width="1.8" stroke-dasharray="7 6" fill="none" marker-end="url(#auArrowViolet)"/>
-  <text x="450" y="102" font-size="12.5" fill="#c9bcff" text-anchor="middle">Instant upload (bypass): not a single chunk is sent — preprocess returns savedPath</text>
+  <text x="450" y="102" font-size="12.5" fill="#c9bcff" text-anchor="middle">Instant upload (bypass): not a single chunk is sent — preprocess returns saved_path</text>
 
   <!-- main path: four nodes -->
   <rect x="40" y="180" width="196" height="180" rx="14" fill="#141d33" stroke="#24304f"/>
@@ -53,7 +53,7 @@
   <text x="72" y="304" font-size="10.5">header chunkIndex = 0</text>
   <circle cx="62" cy="320" r="2.5" fill="#4fd1ff"/>
   <text x="72" y="324" font-size="10.5">Instant-upload check</text>
-  <text x="72" y="340" font-size="10.5">hit → return savedPath</text>
+  <text x="72" y="340" font-size="10.5">hit → return saved_path</text>
 
   <path d="M238 263 L246 270 L238 277" stroke="#4fd1ff" stroke-width="1.8" fill="none"/>
 
@@ -61,10 +61,10 @@
   <circle cx="276" cy="204" r="13" fill="url(#auAccent)"/>
   <text x="276" y="208.5" font-size="13" font-weight="700" fill="#0b1120" text-anchor="middle">2</text>
   <text x="298" y="210" font-size="13" font-weight="700">Chunking (loop)</text>
-  <text x="298" y="226" font-size="10" fill="#7f8db3">(saveChunk)</text>
+  <text x="298" y="226" font-size="10" fill="#7f8db3">(save_chunk)</text>
   <circle cx="270" cy="248" r="2.5" fill="#4fd1ff"/>
   <text x="280" y="252" font-size="10.5">Stored-chunk compare</text>
-  <text x="280" y="268" font-size="10.5">(skip · gap → error)</text>
+  <text x="280" y="268" font-size="10.5">(last+1 → ok · else 409)</text>
   <circle cx="270" cy="284" r="2.5" fill="#4fd1ff"/>
   <text x="280" y="288" font-size="10.5">Incremental size check</text>
   <text x="280" y="304" font-size="10.5">(landed + this chunk)</text>
@@ -107,11 +107,11 @@
   <!-- bypass 2: interruption and resume -->
   <rect x="110" y="390" width="370" height="150" rx="14" fill="#141d33" stroke="#8f7cff" stroke-dasharray="7 5"/>
   <text x="126" y="416" font-size="12.5" font-weight="700" fill="#c9bcff">Interrupted &amp; resume (bypass)</text>
-  <text x="126" y="444" font-size="11" fill="#b9c6ea">Invalid chunk / index gap → an error</text>
+  <text x="126" y="444" font-size="11" fill="#b9c6ea">Invalid chunk / index gap → 409</text>
   <text x="126" y="464" font-size="11" fill="#b9c6ea">is returned, but nothing is cleaned:</text>
   <text x="126" y="484" font-size="11" fill="#b9c6ea">.part and _header stay on disk —</text>
   <text x="126" y="504" font-size="11" fill="#b9c6ea">the client re-sends and continues</text>
-  <text x="126" y="524" font-size="11" fill="#7f8db3">(a re-sent chunk is skipped)</text>
+  <text x="126" y="524" font-size="11" fill="#7f8db3">(unseen chunk resend ok; landed chunk → 409)</text>
 
   <path d="M290 390 V362" stroke="#8f7cff" stroke-width="1.8" stroke-dasharray="5 4" fill="none" marker-end="url(#auArrowViolet)"/>
   <path d="M402 362 V388" stroke="#8f7cff" stroke-width="1.8" stroke-dasharray="5 4" fill="none" marker-end="url(#auArrowViolet)"/>

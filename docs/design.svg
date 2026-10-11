@@ -89,7 +89,7 @@
   <circle cx="676" cy="330" r="9" fill="#1b2742" stroke="#3b4a75"/>
   <text x="676" y="333.5" font-size="10.5" font-weight="700" fill="#86e6ff" text-anchor="middle">2</text>
   <text x="694" y="334" font-size="12" font-weight="700">不为「文件在哪」建表</text>
-  <text x="672" y="356" font-size="10.5" fill="#7f8db3">savedPath 无状态寻址</text>
+  <text x="672" y="356" font-size="10.5" fill="#7f8db3">saved_path 无状态寻址</text>
 
   <rect x="656" y="380" width="204" height="64" rx="12" fill="#141d33" stroke="#24304f"/>
   <circle cx="676" cy="404" r="9" fill="#1b2742" stroke="#3b4a75"/>
@@ -119,7 +119,7 @@
   <rect x="364" y="486" width="154" height="114" rx="12" fill="#141d33" stroke="#24304f"/>
   <text x="378" y="514" font-size="12.5" font-weight="700">秒传</text>
   <text x="378" y="540" font-size="11" fill="#7f8db3">命中 Redis 索引</text>
-  <text x="378" y="558" font-size="11" fill="#7f8db3">直接返回 savedPath</text>
+  <text x="378" y="558" font-size="11" fill="#7f8db3">直接返回 saved_path</text>
 
   <rect x="526" y="486" width="154" height="114" rx="12" fill="#141d33" stroke="#24304f"/>
   <text x="540" y="514" font-size="12.5" font-weight="700">去重</text>

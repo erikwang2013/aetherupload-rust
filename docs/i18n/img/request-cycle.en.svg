@@ -2,7 +2,7 @@
      aria-labelledby="reqTitleEn reqDescEn"
      font-family="-apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" fill="#dbe4ff">
   <title id="reqTitleEn">Request cycle — what happens on one upload request</title>
-  <desc id="reqDescEn">Vertical main line: client POST multipart, routing (Guard::classify or the framework router — four routes), parameter validation, group snapshot Config::resolve_group, then a split: preprocess checks the instant-upload index and creates the .part file with chunkIndex=0 before returning JSON; saveChunk compares the resume state, checks incremental size, appends and writes back chunkIndex, and on the last chunk checks the whole-file size, the real MIME and the whole-file md5 before renaming into place, writing the instant index and deleting the header file. The right column shows the display / download read paths (s3 presigned 302, X-Accel-Redirect, local streaming, forced attachment for inline types). The bottom bar shows the response shape: errors always HTTP 200 with an error field.</desc>
+  <desc id="reqDescEn">Vertical main line: client POST multipart, routing (Guard::classify or the framework router — four routes), parameter validation, group snapshot Config::resolve_group, then a split: preprocess checks the instant-upload index and creates the .part file with chunkIndex=0 before returning the upload result; save_chunk compares the resume state, checks incremental size, appends and writes back chunkIndex, and on the last chunk checks the whole-file size, the real MIME and the whole-file md5 before renaming into place, writing the instant index and deleting the header file. The right column shows the display / download read paths (s3 presigned 302, X-Accel-Redirect, local streaming, forced attachment for inline types). The bottom bar shows the response shape: 200 with a snake_case upload result on success; a problem response (real status + code) on failure.</desc>
 
   <defs>
     <linearGradient id="auPetBody" gradientUnits="userSpaceOnUse" x1="0" y1="-36" x2="0" y2="20">
@@ -69,23 +69,23 @@
   <rect x="40" y="384" width="270" height="36" rx="10" fill="#1b2742" stroke="#62a7ff"/>
   <text x="56" y="407" font-size="12.5" font-weight="700">preprocess (POST)</text>
   <rect x="340" y="384" width="280" height="36" rx="10" fill="#1b2742" stroke="#62a7ff"/>
-  <text x="356" y="407" font-size="12.5" font-weight="700">saveChunk (POST · loop)</text>
+  <text x="356" y="407" font-size="12.5" font-weight="700">save_chunk (POST · loop)</text>
 
   <!-- upper branch: preprocess -->
   <rect x="40" y="430" width="270" height="46" rx="12" fill="#141d33" stroke="#24304f"/>
   <text x="56" y="450" font-size="12">1. Instant-upload check</text>
-  <text x="56" y="468" font-size="11" fill="#7f8db3">hit → return savedPath immediately</text>
+  <text x="56" y="468" font-size="11" fill="#7f8db3">hit → return saved_path immediately</text>
   <rect x="40" y="484" width="270" height="34" rx="12" fill="#141d33" stroke="#24304f"/>
   <text x="56" y="506" font-size="11.5">2. Create empty .part + chunkIndex = 0</text>
   <rect x="40" y="526" width="270" height="62" rx="12" fill="#141d33" stroke="#24304f"/>
-  <text x="56" y="546" font-size="12">3. Respond with JSON</text>
-  <text x="56" y="564" font-size="11" fill="#7f8db3">chunkSize · resourceTempBaseName</text>
-  <text x="56" y="580" font-size="11" fill="#7f8db3">· groupSubDir</text>
+  <text x="56" y="546" font-size="12">3. Respond with the upload result</text>
+  <text x="56" y="564" font-size="11" fill="#7f8db3">chunk_size · resource_temp_base_name</text>
+  <text x="56" y="580" font-size="11" fill="#7f8db3">· group_sub_dir</text>
 
   <!-- lower branch: saveChunk -->
   <rect x="340" y="430" width="280" height="50" rx="12" fill="#141d33" stroke="#24304f"/>
   <text x="356" y="450" font-size="12">chunkIndex compare (resume state)</text>
-  <text x="356" y="468" font-size="11" fill="#7f8db3">re-send → skip · gap → fail, no cleanup</text>
+  <text x="356" y="468" font-size="11" fill="#7f8db3">unseen chunk resend → ok · else 409</text>
   <rect x="340" y="488" width="280" height="32" rx="12" fill="#141d33" stroke="#24304f"/>
   <text x="356" y="509" font-size="11.5">Incremental size check (landed + new)</text>
   <rect x="340" y="526" width="280" height="32" rx="12" fill="#141d33" stroke="#24304f"/>
@@ -131,8 +131,8 @@
 
   <rect x="644" y="470" width="216" height="56" rx="12" fill="#0e1526" stroke="#3b4a75" stroke-dasharray="7 5"/>
   <text x="660" y="490" font-size="11" fill="#7f8db3">Failure → 404</text>
-  <text x="660" y="507" font-size="10.5" fill="#7f8db3">"display fail"</text>
-  <text x="660" y="524" font-size="10.5" fill="#7f8db3">"download fail"</text>
+  <text x="660" y="507" font-size="10.5" fill="#7f8db3">problem+json response</text>
+  <text x="660" y="524" font-size="10.5" fill="#7f8db3">code: resource_not_found</text>
 
   <!-- pet + lines converging into the response -->
   <g transform="translate(250,655) scale(0.95)">
@@ -158,7 +158,7 @@
   <!-- response shape -->
   <rect x="40" y="770" width="820" height="76" rx="14" fill="#141d33" stroke="#30406a"/>
   <text x="60" y="796" font-size="13" font-weight="700">Response shape</text>
-  <text x="60" y="818" font-size="12">{ "error": 0, … } — uploads always return HTTP 200; errors live in the error field (same as PHP)</text>
+  <text x="60" y="818" font-size="12">{ "saved_path": "…" } — 200 + snake_case upload result on success; problem+json (real status + code) on failure</text>
   <!-- 版权角标：全图统一 © erik.xyz -->
   <text x="884" y="866" text-anchor="end" font-family="-apple-system, 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" fill="#7f8db3" opacity="0.85">© erik.xyz</text>
 </svg>
