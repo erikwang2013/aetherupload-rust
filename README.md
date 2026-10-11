@@ -209,7 +209,7 @@ save_chunk → {"saved_path":""}                          // 中间块：还没�
 | 分组未配置，或名字含下划线（**上传端点**） | 400 | `invalid_group` |
 | 未预处理 / 临时资源已不存在（`.part` 与断点都没了） | 409 | `upload_not_prepared` |
 | 分块序号不连续（既不是 `last+1`，也不是合法末块） | 409 | `chunk_out_of_order`＋扩成员 `expected_index` |
-| 累计写入超过声明的 `resource_size`，或单块超过 `chunk_size` | 413 | `payload_too_large` |
+| 累计写入超过分组上限 `resource_maxsize`（0 不限），或单块超过 `chunk_size` | 413 | `payload_too_large` |
 | 末块整份 md5 与声明不符（`lax_mode=false`） | 422 | `hash_mismatch` |
 | 扩展名 / MIME 不在允许集 | 415 | `unsupported_media_type` |
 | 磁盘 / IO / 索引等内部失败 | 500 | `internal_error` |

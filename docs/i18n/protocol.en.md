@@ -82,7 +82,7 @@ Every failure is RFC 9457 `application/problem+json`; the HTTP status code is th
 | Group not configured, or the name contains an underscore (**upload endpoints**) | 400 | `invalid_group` |
 | Not preprocessed / temporary resource gone (neither `.part` nor checkpoint remains) | 409 | `upload_not_prepared` |
 | Chunk index out of order (neither `last+1` nor a valid final chunk) | 409 | `chunk_out_of_order` + `expected_index` extension member |
-| Cumulative write exceeds the declared `resource_size`, or one chunk exceeds `chunk_size` | 413 | `payload_too_large` |
+| Cumulative write exceeds the group cap `resource_maxsize` (0 = unlimited), or one chunk exceeds `chunk_size` | 413 | `payload_too_large` |
 | Final-chunk whole-file md5 does not match the declared hash (`lax_mode=false`) | 422 | `hash_mismatch` |
 | Extension / MIME not in the allowed set | 415 | `unsupported_media_type` |
 | Disk / IO / index and other internal failures | 500 | `internal_error` |
