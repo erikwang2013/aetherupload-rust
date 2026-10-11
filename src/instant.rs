@@ -1,15 +1,15 @@
 // Copyright (c) 2026 erik <erik@erik.xyz> — https://erik.xyz
 
-//! 秒传索引 —— 对应 PHP 版 `RedisSavedPath.php`。
+//! 秒传索引 —— Redis 上的「内容摘要 → `saved_path`」映射：命中即跳过整份上传。
 //!
-//! Redis 客户端以 trait 注入（对齐 snowflake-rust 的做法）：本 crate 既不依赖
-//! `redis` crate，也不需要网络栈。宿主把自家的客户端（`redis`、`fred`、连接池……）
-//! 包一层实现 [`InstantStore`] 即可；没接的同学保持默认的 [`NullInstantStore`]，
-//! 只要不开 `instant_completion`，内核根本不会碰它。
+//! Redis 客户端以 trait 注入：本 crate 既不依赖 `redis` crate，也不需要网络栈。
+//! 宿主把自家的客户端（`redis`、`fred`、连接池……）包一层实现 [`InstantStore`] 即可；
+//! 没接的保持默认的 [`NullInstantStore`]，只要不开 `instant_completion`，
+//! 内核根本不会碰它。
 //!
-//! **键格式与 PHP 版完全一致**（`aetherupload:resource:<group>_<hash>`，每条独立 TTL），
-//! 且保留旧版单 hash（`aetherupload_resource`）的回退读取 —— 从 PHP 版迁移过来的站点
-//! 不需要先跑一遍 `build` 就能继续命中秒传。
+//! **键格式沿用 1.x 既有部署**（`aetherupload:resource:<group>_<hash>`，每条独立
+//! TTL），且保留旧版单 hash（`aetherupload_resource`）的回退读取 —— 1.x 迁移过来的
+//! 站点不需要先跑一遍 `build` 就能继续命中秒传。
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -17,7 +17,7 @@ use std::sync::Mutex;
 use crate::error::{Error, Result};
 use crate::util::is_safe_path_component;
 
-/// 每条记录独立 key 的前缀（与 PHP `RedisSavedPath::KEY_PREFIX` 一致）。
+/// 每条记录独立 key 的前缀（1.x 既有部署同一前缀，存量索引不用重建）。
 pub const KEY_PREFIX: &str = "aetherupload:resource:";
 
 /// 旧版把所有记录放在单个 hash 里；仅用于回退读取与清理。
@@ -28,9 +28,8 @@ pub const EXPIRE_SECONDS: u64 = 604_800;
 
 /// 秒传索引的存储端口：五个动作。
 ///
-/// 刻意不做返回类型归一化 —— PHP 版在 `predis`（`null`/`0`）与 `phpredis`
-/// （`false`/`bool`）之间的分支就是兼容层；Rust 用 `Option` 把这层差异在 trait
-/// 实现里一次抹平：**未命中一律 `None`**。
+/// 刻意不做返回类型归一化 —— 各家客户端对「未命中」的表达五花八门，兼容层放在
+/// trait 实现里：**未命中一律 `None`**，上层只见一种形态。
 pub trait InstantStore: Send + Sync {
     /// 读取一个 key；未命中返回 `Ok(None)`。
     fn get(&self, key: &str) -> Result<Option<String>>;
@@ -41,7 +40,7 @@ pub trait InstantStore: Send + Sync {
     /// 删除一个 key（幂等：不存在也算成功）。
     fn del(&self, key: &str) -> Result<()>;
 
-    /// 批量写入（`aetherupload:build` 重建索引时按批提交）。
+    /// 批量写入（`aetherupload build` 重建索引时按批提交）。
     /// 默认逐条 `SETEX`；客户端支持 pipeline 时覆盖它即可。
     fn set_multi(&self, entries: &[(String, String)], ttl_seconds: u64) -> Result<()> {
         for (key, value) in entries {
@@ -53,7 +52,7 @@ pub trait InstantStore: Send + Sync {
 
     /// 能力位：本 store 是否真的实现了旧版单 hash 回退（`legacy_get`/`legacy_del`）。
     ///
-    /// 默认 `false` —— 绝大多数站点没有 PHP 版迁移过来的存量数据，[`InstantIndex::get`]
+    /// 默认 `false` —— 绝大多数站点没有 1.x 迁移过来的存量数据，[`InstantIndex::get`]
     /// 主键未命中时就不必再发一次注定空的网络往返；只有确实会读旧 hash 的客户端
     /// （如本仓库的 RESP 客户端）才声明 `true`，声明后行为与没有能力位时一字不差。
     fn supports_legacy_fallback(&self) -> bool {
@@ -71,7 +70,7 @@ pub trait InstantStore: Send + Sync {
         Ok(())
     }
 
-    /// 删除某个前缀下的全部记录（`aetherupload:build` 重建前清空索引用）。
+    /// 删除某个前缀下的全部记录（`aetherupload build` 重建前清空索引用）。
     /// 默认实现什么都不做 —— 不支持遍历的实现（如受限的云 Redis）如实保持空操作，
     /// 由 `Console::build` 把「清空失败」如实报出来。
     fn delete_prefix(&self, _prefix: &str) -> Result<()> {
@@ -81,8 +80,8 @@ pub trait InstantStore: Send + Sync {
 
 /// 未接 Redis 的默认实现：**一调用就报错**，而不是静默失败。
 ///
-/// 与 PHP `NullRedis` 同一取向：开了秒传却没接客户端时，报错远比「秒传静默失效」
-/// 容易排查。内核只在 `instant_completion = true` 时才会碰它。
+/// 取向：开了秒传却没接客户端时，报错远比「秒传静默失效」容易排查。
+/// 内核只在 `instant_completion = true` 时才会碰它。
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NullInstantStore;
 
@@ -109,7 +108,7 @@ impl InstantStore for NullInstantStore {
     }
 }
 
-/// 内存实现：**供测试与示例使用**（PHP 侧对应测试里的数组替身）。
+/// 内存实现：**供测试与示例使用**。
 ///
 /// 不做过期 —— TTL 参数被忽略；只在单进程内有效。生产环境请注入真实 Redis 客户端。
 /// 没有旧版单 hash 的概念，**不参与回退**：能力位保持默认的 `false`。
@@ -151,7 +150,7 @@ impl InstantStore for MemoryInstantStore {
     }
 }
 
-/// 秒传索引的门面：键构造 + 回退读取语义（对应 `RedisSavedPath` 的静态方法）。
+/// 秒传索引的门面：键构造 + 前缀/回退读取语义。
 pub struct InstantIndex<'a> {
     store: &'a dyn InstantStore,
     ttl_seconds: u64,
@@ -162,10 +161,11 @@ impl<'a> InstantIndex<'a> {
         Self { store, ttl_seconds }
     }
 
-    /// 构造记录键 `group_hash` —— 对应 `RedisSavedPath::getKey()`。
+    /// 构造记录键 `group_hash`（最终键 = [`KEY_PREFIX`] + 它）。
     ///
-    /// hash 是客户端可控值：非安全字符集（最长 64）直接 [`Error::InvalidOperation`]，
-    /// 否则会拼出 `file_Array` 这类垃圾键。
+    /// hash 是客户端可控值：非安全字符集或超长（> 64）直接
+    /// [`Error::InvalidOperation`] —— 否则会拼出带空白/控制字符的垃圾键，
+    /// 既污染索引，也让 `build` 的清理遍历认不出来。
     pub fn key(group: &str, hash: &str) -> Result<String> {
         if !is_safe_path_component(hash, false, Some(64)) {
             return Err(Error::InvalidOperation);
@@ -174,13 +174,13 @@ impl<'a> InstantIndex<'a> {
         Ok(format!("{group}_{hash}"))
     }
 
-    /// 读取：主键未命中时回退旧版单 hash（历史数据仍可命中）。
+    /// 读取：主键未命中时回退旧版单 hash（1.x 存量数据仍可命中）。
     ///
     /// 回退只在 store 声明 [`InstantStore::supports_legacy_fallback`] 为 `true` 时发生：
     /// 没接旧数据的 store 未命中就到此为止，省掉一次纯属白跑的往返。
     ///
-    /// 与 PHP 的差异：PHP 未命中抛 `read error`、由调用方 catch 成 null；这里直接
-    /// 返回 `Ok(None)` —— 调用点少一层 catch，语义相同。
+    /// **未命中是 `Ok(None)`，不是失败**：秒传查不中按「没命中」继续走正常上传，
+    /// 绝不因此报错（见协议 §4 的秒传一行）。
     pub fn get(&self, key: &str) -> Result<Option<String>> {
         if let Some(saved_path) = self.store.get(&format!("{KEY_PREFIX}{key}"))? {
             return Ok(Some(saved_path));
@@ -199,7 +199,7 @@ impl<'a> InstantIndex<'a> {
             .set_ex(&format!("{KEY_PREFIX}{key}"), saved_path, self.ttl_seconds)
     }
 
-    /// 批量写入：`(键, savedPath)` 列表，键会补上统一前缀。
+    /// 批量写入：`(键, saved_path)` 列表，键会补上统一前缀。
     pub fn set_multi(&self, entries: &[(String, String)]) -> Result<()> {
         let prefixed: Vec<(String, String)> = entries
             .iter()
@@ -215,7 +215,7 @@ impl<'a> InstantIndex<'a> {
         self.store.legacy_del(key)
     }
 
-    /// 清空全部索引（`aetherupload:build` 重建前置动作）。
+    /// 清空全部索引（`aetherupload build` 重建前置动作）。
     pub fn delete_all(&self) -> Result<()> {
         self.store.delete_prefix(KEY_PREFIX)
     }
@@ -227,7 +227,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
-    fn key_format_matches_php() {
+    fn key_format_is_group_underscore_hash() {
         assert_eq!(
             InstantIndex::key("file", "d41d8cd98f00b204e9800998ecf8427e").unwrap(),
             "file_d41d8cd98f00b204e9800998ecf8427e"
@@ -258,7 +258,7 @@ mod tests {
             index.get("file_abc").unwrap().as_deref(),
             Some("file_202610_abc.jpg")
         );
-        // 键前缀与 PHP 一致
+        // 键前缀与 1.x 既有部署一致
         assert!(
             store
                 .get("aetherupload:resource:file_abc")
@@ -272,7 +272,7 @@ mod tests {
         index.delete("file_abc").unwrap();
     }
 
-    /// 旧版单 hash 的数据仍要能读到（PHP 版的回退读取）。
+    /// 旧版单 hash 的存量数据仍要能读到（1.x 的回退读取）。
     #[test]
     fn legacy_hash_fallback_is_readable() {
         struct LegacyStore(MemoryInstantStore);

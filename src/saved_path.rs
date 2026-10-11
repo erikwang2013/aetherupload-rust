@@ -1,8 +1,8 @@
 // Copyright (c) 2026 erik <erik@erik.xyz> — https://erik.xyz
 
-//! `savedPath` 的三段式编解码 —— 对应 PHP 版 `SavedPathResolver.php`。
+//! `saved_path` 的三段式编解码。
 //!
-//! 形如 `group_groupSubDir_<md5>.<ext>`：客户端拿到什么、原样回传什么，服务端无状态
+//! 形如 `<group>_<group_sub_dir>_<md5>.<ext>`：客户端拿到什么、原样回传什么，服务端无状态
 //! 地拆回三段即可寻址，不需要为「文件在哪」维护一张表。三段各自的合法性在 decode
 //! 时逐段校验（客户端可控值，不能直接拼进路径）。
 
@@ -18,18 +18,18 @@ pub struct SavedPath {
 }
 
 impl SavedPath {
-    /// 与 PHP 完全一致的拼接：`group . '_' . groupSubDir . '_' . name`。
+    /// 拼接形态沿用 1.x 既有部署：`group` + `_` + `group_sub_dir` + `_` + `name`。
     ///
-    /// 这里不做校验 —— group 与 groupSubDir 由服务端自己生成（分组名不含下划线是配置
+    /// 这里不做校验 —— group 与 group_sub_dir 由服务端自己生成（分组名不含下划线是配置
     /// 约束，子目录名由 `generate_sub_dir_name()` 产出），name 是 `<md5>.<ext>`。
     pub fn encode(group: &str, group_sub_dir: &str, name: &str) -> String {
         format!("{group}_{group_sub_dir}_{name}")
     }
 
-    /// 拆解客户端回传的 `savedPath`。
+    /// 拆解客户端回传的 `saved_path`。
     ///
-    /// 与 PHP `explode('_', $savedPath, 3)` 等价：**只拆前两处下划线**，第三段里的
-    /// 下划线属于文件名。段数不足或任一段不满足安全字符集 → [`Error::InvalidOperation`]。
+    /// **只拆前两处下划线**（第三段里的下划线属于文件名）。段数不足或任一段不满足
+    /// 安全字符集 → [`Error::InvalidOperation`]。
     pub fn decode(saved_path: &str) -> Result<Self> {
         let mut parts = saved_path.splitn(3, '_');
 

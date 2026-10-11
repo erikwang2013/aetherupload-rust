@@ -1,17 +1,16 @@
 // Copyright (c) 2026 erik <erik@erik.xyz> — https://erik.xyz
 
-//! 运行时绑定 —— 对应 PHP 版 `Runtime.php` + `Util.php` 里需要依赖的那几个方法。
+//! 运行时绑定 —— 进程级依赖的装配与只读访问：存储驱动、秒传索引、事件出口、
+//! MIME 探测器，外加依赖它们的那几个资源寻址与删除动作。
 //!
-//! PHP 的 `Runtime` 是静态门面：静态绑定的适配器 + `RequestContext` 里按执行上下文
-//! 隔离的可变状态（webman 常驻进程与 Hyperf 协程下多请求交错，进程级可变状态会被
-//! 下一个请求覆盖）。Rust 版把这两件事一起消掉：
+//! 两条设计红线：
 //!
 //! - **不可变绑定** → 一个 [`Runtime`] 实例，构造后不再变化，`Arc` 共享即可；
-//! - **每请求状态** → 显式传参（`&GroupSnapshot`、`locale`），随调用栈走，
-//!   既不需要上下文存储，也不可能串组。
+//! - **每请求状态** → 显式传参（`&GroupSnapshot`、`locale`），随调用栈走 ——
+//!   常驻进程与协程下多请求交错也不会互相覆盖，没有全局单例就不可能串组。
 //!
-//! 存储驱动、秒传索引、事件出口、MIME 探测器都以 `Arc<dyn Trait>` 注入，
-//! 默认值分别是 local 磁盘、Null（一调用就报错）、空实现、魔数探测器。
+//! 四个依赖都以 `Arc<dyn Trait>` 注入，默认值分别是 local 磁盘、
+//! Null（一调用就报错）、空事件出口、魔数探测器。
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -42,11 +41,10 @@ pub struct Runtime {
 impl Runtime {
     /// 按配置装配运行时。
     ///
-    /// `base_path` 是宿主项目根（PHP 里 `Runtime::basePath()`）；上传根目录即
-    /// `base_path/root_dir`。返回 [`Error::Backend`] 的唯一情形是存储驱动配置
-    /// 不可用（`driver = s3` 但没开 `s3` feature，或驱动名不认识）——
-    /// 与 PHP 在 `Storage::driver()` 里报错的时机不同（构造期 vs 请求期），
-    /// 但都选择「大声失败」而不是悄悄回落 local。
+    /// `base_path` 是宿主项目根；上传根目录即 `base_path/root_dir`。
+    /// 返回 [`Error::Backend`] 的唯一情形是存储驱动配置不可用
+    /// （`driver = s3` 但没开 `s3` feature）—— 校验放在构造期而不是
+    /// 请求期，选择「大声失败」而不是悄悄回落 local。
     pub fn new(config: Config, base_path: impl Into<PathBuf>) -> Result<Self> {
         let config = Arc::new(config);
         let base_path = base_path.into();
@@ -121,20 +119,20 @@ impl Runtime {
         InstantIndex::new(self.instant.as_ref(), self.config.resource_redis_expire)
     }
 
-    /// 按 TTL 默认值 7 天构造（`InstantIndex::new` 的显式版本，测试与迁移脚本用）。
+    /// 指定 TTL 构造（默认走 `resource_redis_expire`；这个出口给需要自定义过期的调用方）。
     pub fn instant_index_with_ttl(&self, ttl_seconds: u64) -> InstantIndex<'_> {
         InstantIndex::new(self.instant.as_ref(), ttl_seconds)
     }
 
-    /// 默认 TTL 常量透出（对应 PHP `RedisSavedPath::EXPIRE_SECONDS`）。
+    /// 默认 TTL（7 天，[`EXPIRE_SECONDS`]）常量透出。
     pub fn default_instant_ttl() -> u64 {
         EXPIRE_SECONDS
     }
 
-    // —— 资源寻址与删除（PHP `Util::getResource` / `deleteResource` / `deleteRedisSavedPath`）——
+    // —— 资源寻址与删除 ——
 
-    /// 由 `savedPath` 解析出成品对象；分组不存在或路径非法时返回 `None`
-    /// （PHP 版同样用 catch 把异常吞成 `false`）。
+    /// 由 `saved_path` 解析出成品对象；分组不存在或路径非法时返回 `None` ——
+    /// 「查不到」不是错误，调用方按可选值处理。
     pub fn resource(&self, saved_path: &str) -> Option<Resource> {
         let params = SavedPath::decode(saved_path).ok()?;
         let snapshot = self.config.resolve_group(&params.group).ok()?;
@@ -150,7 +148,7 @@ impl Runtime {
 
     /// 删除资源文件，并联动清理秒传记录 —— 避免死链。
     ///
-    /// 幂等语义与 PHP 一致：文件不存在、分组非法、秒传后端故障都返回 `false`
+    /// 幂等语义：文件不存在、分组非法、秒传后端故障都返回 `false`
     /// （调用方据此决定是否重试），**不 panic 也不向上抛**。
     pub fn delete_resource(&self, saved_path: &str) -> bool {
         let Some(resource) = self.resource(saved_path) else {
@@ -161,7 +159,7 @@ impl Runtime {
             return false;
         }
 
-        // 秒传清理失败不影响删除结果（与 PHP 的 try/catch 一致）
+        // 秒传清理失败不影响删除结果（清理是补充动作，失败只损失一条索引）
         let _ = self.delete_instant_path(saved_path);
 
         true
@@ -205,7 +203,7 @@ impl std::fmt::Debug for Runtime {
     }
 }
 
-/// 按 `storage.driver` 造驱动 —— 对应 PHP `Storage::driver()`。
+/// 按 `storage.driver` 造驱动（s3 分支在缺 feature 时大声报错）。
 fn default_storage(config: &Config, upload_root: &Path) -> Result<Arc<dyn Storage>> {
     match config.storage.driver {
         StorageDriver::Local => Ok(Arc::new(LocalStorage::new(upload_root))),

@@ -1,13 +1,14 @@
 // Copyright (c) 2026 erik <erik@erik.xyz> — https://erik.xyz
 
-//! MD5（RFC 1321）—— 对应 PHP 内核里的 `md5_file()`。
+//! MD5（RFC 1321）—— 整份文件的完整性校验与秒传索引键。
 //!
-//! 为什么手写而不是引 `md-5` crate：本 crate 默认 feature 下零第三方依赖（对齐
-//! PHP 版「零新增依赖」的取向）。完整性校验只需要一个哈希，且 RFC 1321 自带
-//! 全套测试向量 —— 正确性有锚，胆子可以大一点。
+//! 为什么手写而不是引 `md-5` crate：本 crate 默认 feature 下零第三方依赖，
+//! 而完整性校验只需要一个哈希；RFC 1321 自带全套测试向量 —— 正确性有锚，
+//! 不必为此背一个依赖。
 //!
 //! **这不是密码学安全的哈希**，本库只用它做「上传前后内容一致」的校验与秒传
-//! 索引键（与 PHP 版逐字节一致：客户端 `spark-md5`、服务端 `md5_file()`）。
+//! 索引键。两端口径必须逐字节一致：客户端用 `spark-md5` 算出摘要随请求发来，
+//! 服务端用 [`md5_file`] 复算；摘要口径一变，两端的比对就全错。
 
 use std::fs::File;
 use std::io::{self, Read};
@@ -160,15 +161,15 @@ impl Md5 {
     }
 }
 
-/// 一次性哈希。返回小写 16 进制（与 PHP `md5()` 输出一致）。
+/// 一次性哈希。返回小写 16 进制（客户端与服务端约定的摘要口径）。
 pub fn md5_hex(data: &[u8]) -> String {
     let mut ctx = Md5::new();
     ctx.update(data);
     to_hex(&ctx.finalize())
 }
 
-/// 流式计算文件哈希。返回小写 16 进制（与 PHP `md5_file()` 输出一致）——
-/// 秒传索引键与落盘文件名都来自它，改动会直接让存量资源失联。
+/// 流式计算文件哈希。返回小写 16 进制 —— 秒传索引键与落盘文件名都来自它，
+/// 摘要口径一改，1.x 既有部署里的存量资源会当场失联。
 pub fn md5_file(path: impl AsRef<Path>) -> io::Result<String> {
     let mut file = File::open(path)?;
     let mut ctx = Md5::new();

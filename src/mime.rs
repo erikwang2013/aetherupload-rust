@@ -1,11 +1,10 @@
 // Copyright (c) 2026 erik <erik@erik.xyz> — https://erik.xyz
 
-//! MIME ↔ 扩展名映射与内容类型探测 —— 对应 PHP 版 `MimeType.php` + `mime_content_type()`。
+//! MIME ↔ 扩展名映射与内容类型探测。
 //!
-//! 表本身从 PHP 版原样搬运（769 条，保序；PHP 数组的重复键 `tar` 已核对为同值，
-//! 保留首个出现位置）。用途只有一个：末块落盘前按**真实内容**反查扩展名，再走一遍
-//! 扩展名白/黑名单 —— 客户端声明的 `resource_ext` 不可信（对齐 PHP 的
-//! `checkMimeType()`：`MimeType::search(mime_content_type($path))`）。
+//! 表沿用 1.x 既有部署的 769 条（保序；重键 `tar` 同值，保留首个出现位置）。
+//! 用途只有一个：末块落盘前按**真实内容**反查扩展名，再走一遍扩展名白/黑名单
+//! —— 客户端声明的 `resource_ext` 不可信，必须以文件内容为准。
 //!
 //! 表以紧凑字符串内联（每行 8 条 `扩展名=类型`），首次查询解析一次并缓存：770 行的
 //! 逐行数组会顶破仓库「单文件 500 行」的约定，而数据表的 diff 友好度不如规则一致性重要。
@@ -126,12 +125,12 @@ fn table() -> &'static [(&'static str, &'static str)] {
     })
 }
 
-/// 由 MIME 类型反查扩展名 —— 对应 PHP 的 `MimeType::search()`。
+/// 由 MIME 类型反查扩展名。
 ///
-/// `extra` 即配置项 `extra_mime_types`（同为 `扩展名 => 类型`），语义与 PHP 的
-/// `array_merge(self::$mimes, $extra)` 一致：**同扩展名由 `extra` 覆盖**（位置不变），
-/// `extra` 独有的扩展名排在其后；随后按表序返回第一个值命中的扩展名。
-/// 查不到返回 `None`（PHP 返回 `null`，调用方翻译成 `missing_mimetype`）。
+/// `extra` 即配置项 `extra_mime_types`（同为 `扩展名 => 类型`），合并语义：
+/// **同扩展名由 `extra` 覆盖**（位置不变），`extra` 独有的扩展名排在其后；
+/// 随后按表序返回第一个值命中的扩展名。查不到返回 `None`，调用方把它
+/// 翻译成 `missing_mimetype` 失败。
 pub fn search(mime_type: &str, extra: &[(String, String)]) -> Option<String> {
     for (ext, base_mime) in table() {
         let value = extra
@@ -155,14 +154,14 @@ pub fn search(mime_type: &str, extra: &[(String, String)]) -> Option<String> {
     None
 }
 
-/// 由扩展名反查 MIME —— 对应 PHP 的 `MimeType::getMimeTypeFromExtension()`。
+/// 由扩展名反查 MIME。
 ///
-/// 查不到时返回 `application/octet-stream`（PHP 的默认值）。文件下发时用它填
-/// `Content-Type`：与上传时校验用的是**同一张表**，不会出现「校验按 A 表、下发按 B 表」。
+/// 查不到时返回 `application/octet-stream`（兜底类型）。文件下发时用它填
+/// `Content-Type`：与上传校验共用**同一张表**，不会出现「校验按 A 表、下发按 B 表」。
 pub fn mime_for_extension(extension: &str, extra: &[(String, String)]) -> String {
     let extension = extension.to_ascii_lowercase();
 
-    // extra 与 PHP 的 array_merge 同语义：同扩展名覆盖表内值
+    // extra 覆盖表内同扩展名的值（位置不变）
     if let Some((_, mime)) = extra.iter().find(|(ext, _)| *ext == extension) {
         return mime.clone();
     }
@@ -176,12 +175,11 @@ pub fn mime_for_extension(extension: &str, extra: &[(String, String)]) -> String
     "application/octet-stream".to_string()
 }
 
-/// 内容类型探测器 —— 对应 PHP 的 `ext-fileinfo`（`mime_content_type()`）。
+/// 内容类型探测器。
 ///
-/// PHP 里这是常驻扩展，宿主环境装了就有；Rust 版把它做成可注入的 trait：
-/// 默认实现 [`MagicBytesDetector`] 只看魔数（零依赖），需要更精细的判断
-/// （如 `.docx` 与 `.zip` 的区分）时，宿主可自行实现 `file(1)` 或
-/// `infer` 之类的探测器替换。
+/// 做成可注入的 trait：默认实现 [`MagicBytesDetector`] 只看魔数（零依赖），
+/// 需要更精细的判断（如 `.docx` 与 `.zip` 的区分）时，宿主可自行实现
+/// `file(1)` 或 `infer` 之类的探测器替换。
 pub trait MimeDetector: Send + Sync {
     /// 返回探测到的 MIME 类型；无法判断时返回 `None`。
     fn detect(&self, path: &Path) -> io::Result<Option<String>>;
@@ -221,8 +219,8 @@ fn probe_text(head: &[u8]) -> Option<&str> {
 
 /// 纯函数：从字节头部判断 MIME（便于单测，不需要真文件）。
 ///
-/// 返回的类型都保证能在 [`table`] 里反查到扩展名，否则内核会在
-/// `checkMimeType()` 处报 `missing_mimetype` 而不是给出可用扩展名。
+/// 返回的类型都保证能在 [`table`] 里反查到扩展名，否则末块的内容校验只能报
+/// `missing_mimetype`，而给不出可用扩展名。
 pub fn detect_bytes(head: &[u8]) -> Option<String> {
     let hit = |mime: &str| Some(mime.to_string());
 
@@ -281,7 +279,7 @@ pub fn detect_bytes(head: &[u8]) -> Option<String> {
         return hit("image/bmp");
     }
 
-    // 文本：SVG 先判，再回落纯文本（PHP 的 fileinfo 同样把文本判成 text/plain）。
+    // 文本：SVG 先判，再回落纯文本（文本类内容统一按 text/plain 处理）。
     // 含 NUL 的一律当二进制 —— UTF-8 里 0x00 是合法字符，不排掉会把「一堆控制字节」
     // 判成 text/plain（file(1) 也以 NUL 作为二进制判据）。
     if !head.contains(&0)
@@ -304,7 +302,7 @@ mod tests {
 
     #[test]
     fn table_is_complete() {
-        // 769 = 770 - 1（PHP 数组里重复的 tar 键去重后）
+        // 769 = 770 - 1（表内重复的 tar 键去重后）
         assert_eq!(table().len(), 769);
         assert!(
             table()
@@ -314,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn search_matches_php_semantics() {
+    fn search_reverse_lookup_semantics() {
         assert_eq!(search("image/png", &[]).as_deref(), Some("png"));
         assert_eq!(search("application/pdf", &[]).as_deref(), Some("pdf"));
         // 同名 MIME 取表中第一个命中的扩展名

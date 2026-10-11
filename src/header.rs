@@ -1,13 +1,14 @@
 // Copyright (c) 2026 erik <erik@erik.xyz> — https://erik.xyz
 
-//! 断点状态文件 —— 对应 PHP 版 `Header.php`。
+//! 断点状态文件。
 //!
-//! 每个上传中的临时资源对应 `_header/<tempBaseName>` 一个文件，内容只有一个
-//! `chunkIndex`（最后一块成功的序号）。它是「断线续传」的唯一状态：刷新页面重来
-//! 时，客户端从预处理重新拿 tempBaseName 之外，服务端凭 header 就知道进度。
+//! 每个上传中的临时资源对应 `_header/<resource_temp_basename>` 一个文件，内容只有
+//! 一个序号（最后一块成功的 `chunk_index`）。它是「断线续传」的唯一状态：服务端凭
+//! 断点就知道进度，不需要为进度维护任何别的表。磁盘格式沿用 1.x 既有部署：
+//! 十进制文本，无换行。
 //!
-//! 写入采用「加锁 + 截断 + 覆写」：同一临时名的重试请求可能并发，PHP 版用
-//! `flock(LOCK_EX)`，Rust 用 `std::fs::File::lock()`（同为 advisory 锁）。
+//! 写入采用「加锁 + 截断 + 覆写」：同一临时名的重试请求可能并发（客户端超时重发、
+//! 前端重试），锁用 `std::fs::File::lock()`（advisory 锁）。
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -15,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 
-/// `_header` 目录名（与 PHP 一致，直接放在上传根目录下）。
+/// `_header` 目录名（直接放在上传根目录下；与 1.x 既有部署同址）。
 pub const HEADER_DIR: &str = "_header";
 
 #[derive(Debug, Clone)]
@@ -34,7 +35,7 @@ impl Header {
         }
     }
 
-    /// 覆盖写入（内容即 `chunkIndex` 的十进制文本）。
+    /// 覆盖写入（内容即 `chunk_index` 的十进制文本）。
     pub fn write(&self, content: &str) -> Result<()> {
         let mut file = OpenOptions::new()
             .create(true)
@@ -121,7 +122,7 @@ impl Header {
 /// [`Header::lock_exclusive`] 的 RAII 守卫：构造即持锁，Drop 即释放。
 ///
 /// 用它的那一段必须把「读断点 → 校验 → 追加 → 回写断点」整段包住 —— 这才是
-/// 同一临时名的分块写入的原子单位（对应 PHP 版里没有、但并发下必需的那把锁）。
+/// 同一临时名的分块写入的原子单位：只锁单次读写拦不住两个请求同时通过序号检查。
 pub struct HeaderGuard<'a> {
     file: File,
     // 只用于 Debug 展示是哪个断点被锁住；锁随 file 释放

@@ -1,6 +1,6 @@
 // Copyright (c) 2026 erik <erik@erik.xyz> — https://erik.xyz
 
-//! S3 兼容对象存储驱动 —— 对应 PHP 版 `Storage/S3Storage.php` + `S3Client.php`。
+//! S3 兼容对象存储驱动（AWS S3 及 MinIO / Ceph 等兼容实现）。
 //!
 //! 只做本包需要的五个操作：PUT / multipart / HEAD / DELETE / 预签名 GET。
 //!
@@ -11,7 +11,7 @@
 //! 实现 [`HttpTransport`]，用 [`S3Storage::with_transport`] 注入；没接的同学拿到的是
 //! [`NullTransport`] —— 一调用就报错，而不是悄悄失败。
 //!
-//! **错误归一**（照抄 PHP）：[`Storage::publish`] 的任何底层失败都对外报
+//! **错误归一**：[`Storage::publish`] 的任何底层失败都对外报
 //! [`Error::RenameResourceFail`]、删本地失败报 [`Error::DeleteResourceFail`]；
 //! [`Storage::exists`] / [`Storage::delete`] 让底层错误原样上行。底层错误消息里的
 //! 凭据一律擦除（见 `fail()`），secret_key 从不出现在任何消息里。
@@ -33,10 +33,10 @@ const PART_SIZE: u64 = 67_108_864;
 /// 幂等操作的重试上限（网络异常 / 5xx / 429；4xx 不重试）。
 const MAX_ATTEMPTS: u32 = 3;
 
-/// 重试退避基数（第 n 次重试前睡 `n * 200ms`，与 PHP 的 `RETRY_SLEEP_US` 逐值一致）。
+/// 重试退避基数（第 n 次重试前睡 `n * 200ms`，线性退避）。
 const RETRY_SLEEP_MILLIS: u64 = 200;
 
-/// 预签名 URL 有效期（秒）—— 下载是「302 后立即取」，300s 足够；与 PHP 的 `PRESIGN_TTL` 一致。
+/// 预签名 URL 有效期（秒）—— 下载是「302 后立即取」，300s 足够。
 pub const PRESIGN_TTL: u64 = 300;
 
 /// 请求体。
@@ -47,7 +47,7 @@ pub enum HttpBody {
     /// 内存里的完整 body（multipart 的 complete XML 等）。
     Bytes(Vec<u8>),
     /// 本地文件的 `[offset, offset + len)` 切片 —— multipart 分片零拷贝：不整读进内存，
-    /// 且 payload 哈希正好覆盖**实际发送的字节**（PHP 的 `bodyFile`/`bodyOffset`/`bodySize`）。
+    /// 且 payload 哈希正好覆盖**实际发送的字节**。
     File {
         /// 本地文件路径。
         path: PathBuf,
@@ -168,7 +168,7 @@ impl S3Storage {
         )
     }
 
-    /// 对象 URL 三元组 `(scheme, host, path)` —— 对应 PHP `S3Client::objectUrl()`。
+    /// 对象 URL 三元组 `(scheme, host, path)`。
     fn object_url(&self, key: &str) -> (String, String, String) {
         let bucket = &self.config.bucket;
 
@@ -204,9 +204,10 @@ impl S3Storage {
         }
     }
 
-    /// 发一个已签名请求 —— 对应 PHP `S3Client::call()`。
+    /// 发一个已签名请求。
     ///
-    /// 请求在重试循环**之前**构造一次：三次重试沿用同一 `x-amz-date` 与签名（PHP 同）。
+    /// 请求在重试循环**之前**构造一次：三次重试沿用同一 `x-amz-date` 与签名 ——
+    /// 重签会把时间戳换掉，与已发出的请求对不上。
     fn call(
         &self,
         method: &str,
@@ -336,7 +337,8 @@ impl S3Storage {
         Err(self.fail("DELETE", key, &response))
     }
 
-    /// 按阈值选路：`filesize > multipart_threshold` 走 multipart（**严格大于**，与 PHP 同）。
+    /// 按阈值选路：`filesize > multipart_threshold` 走 multipart（**严格大于** ——
+    /// 恰好等于阈值仍单次 PUT）。
     fn upload_multipart_or_put(
         &self,
         key: &str,
@@ -352,7 +354,7 @@ impl S3Storage {
 
     /// multipart 编排：create → parts（固定 64MB 切片）→ complete。
     ///
-    /// 两条失败兜底（照抄 PHP，都是实测踩过的坑）：
+    /// 两条失败兜底（都是实测踩过的坑）：
     /// - complete 的响应丢了（网络异常）但对象其实已写入 → HEAD 确认后视为成功；
     /// - HTTP 200 但体内嵌 `<Error>` 仍是失败（部分实现的怪癖）→ HEAD 确认后 abort。
     fn multipart(&self, key: &str, local_path: &Path, content_type: &str) -> Result<()> {
@@ -446,7 +448,7 @@ impl S3Storage {
         let _ = self.call("DELETE", key, &query, Vec::new(), HttpBody::Empty);
     }
 
-    /// 预签名 GET —— 对应 PHP `S3Client::presign()`。纯本地计算，不发任何请求。
+    /// 预签名 GET。纯本地计算，不发任何请求。
     fn presign(&self, key: &str, ttl: u64, response_params: &[(String, String)]) -> Result<String> {
         let (scheme, host, path) = self.object_url(key);
 
@@ -478,7 +480,7 @@ impl S3Storage {
         Ok(format!("{scheme}://{host}{path}?{signed}"))
     }
 
-    /// 失败诊断消息 —— 对应 PHP `S3Client::fail()`。
+    /// 失败诊断消息 —— 诊断信息留下、凭据擦掉。
     ///
     /// 错误体只留诊断信息，凭据标识一律擦掉：既擦本驱动 `access_key` 的裸串
     /// （网关错误页可能回显 Authorization），也擦 `<AWSAccessKeyId>` 标签的内容
@@ -542,8 +544,8 @@ impl Storage for S3Storage {
         })();
 
         if uploaded.is_err() {
-            // 对外统一为上传链路的既有错误键（PHP 把底层原因挂在 previous 上；
-            // 本 crate 的错误枚举承载不了 cause，底层细节见 fail() 的擦除后消息）
+            // 对外统一为上传链路的既有错误键（本 crate 的错误枚举没有 cause 链，
+            // 底层细节只留在 fail() 构造的擦除后消息里）
             return Err(Error::RenameResourceFail);
         }
 
@@ -619,7 +621,7 @@ fn split_endpoint(endpoint: &str) -> (String, String, String) {
     (scheme.to_string(), authority.to_string(), base)
 }
 
-/// 与 PHP `mime_content_type()` 对齐：按内容探测；探测不到回落到 octet-stream。
+/// 按内容探测类型（不看扩展名 —— 那是客户端可控值）；探测不到回落到 octet-stream。
 fn detect_content_type(path: &Path) -> String {
     MagicBytesDetector
         .detect(path)
@@ -628,15 +630,15 @@ fn detect_content_type(path: &Path) -> String {
         .unwrap_or_else(|| "application/octet-stream".to_string())
 }
 
-/// 本地文件大小（对应 PHP `filesize()`）。
+/// 本地文件大小。
 fn file_len(path: &Path) -> Result<u64> {
     Ok(std::fs::metadata(path).map_err(Error::from)?.len())
 }
 
 /// 流式计算文件切片 `[offset, offset + len)` 的 sha256（不整读进内存）。
 ///
-/// `offset = 0` 且 `len` 等于文件大小时即整文件哈希 —— PHP 的 `hash_file` 快路径在此
-/// 不是必需的优化（都是流式读一遍），少一个分支少一处不一致。
+/// `offset = 0` 且 `len` 等于文件大小时即整文件哈希 —— 不做「整文件」特判
+/// （反正都是流式读一遍），少一个分支少一处不一致。
 fn sha256_hex_file_slice(path: &Path, offset: u64, len: u64) -> Result<String> {
     let mut file = std::fs::File::open(path).map_err(Error::from)?;
     if offset > 0 {
@@ -670,7 +672,7 @@ fn xml_tag<'a>(body: &'a str, name: &str) -> Option<&'a str> {
     Some(&body[start..end])
 }
 
-/// XML 文本节点转义（PHP 的 `ENT_NOQUOTES`）：`&<>` 转义，引号保持原样。
+/// XML 文本节点转义：`&<>` 转义，引号保持原样（ETag 的双引号是值本身的一部分）。
 fn xml_escape_text(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -678,8 +680,7 @@ fn xml_escape_text(value: &str) -> String {
         .replace('>', "&gt;")
 }
 
-/// XML 实体解码（PHP 的 `html_entity_decode(…, ENT_QUOTES | ENT_XML1)`）：
-/// 五个具名实体 + `&#NN;` / `&#xHH;` 数字引用，其余原样保留。
+/// XML 实体解码：五个具名实体 + `&#NN;` / `&#xHH;` 数字引用，其余原样保留。
 fn xml_unescape(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
 
@@ -748,7 +749,7 @@ fn redact_access_key_id(body: &str) -> String {
     out
 }
 
-/// 当前 UTC 时刻的 `YYYYMMDDTHHMMSSZ`（对应 PHP `gmdate('Ymd\THis\Z')`）。
+/// 当前 UTC 时刻的 `YYYYMMDDTHHMMSSZ`（SigV4 规定的时间戳格式）。
 fn amz_date_now() -> String {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -973,7 +974,7 @@ mod tests {
     }
 
     #[test]
-    fn content_type_is_detected_from_content_like_php_mime_content_type() {
+    fn content_type_is_detected_from_content_bytes() {
         let dir = std::env::temp_dir().join(format!("aetherupload-s3-mime-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 

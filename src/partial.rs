@@ -1,10 +1,11 @@
 // Copyright (c) 2026 erik <erik@erik.xyz> — https://erik.xyz
 
-//! 上传中的分块文件 —— 对应 PHP 版 `PartialResource.php`。
+//! 上传中的分块文件。
 //!
-//! 磁盘上的形态是 `<root>/<group_dir>/<subdir>/<tempName>.<ext>.part`：
-//! 一个空文件 + 逐块追加。文件校验（大小、MIME、整份 md5）都发生在末块，
-//! 通过后由 [`PartialResource::publish`] 交给存储驱动改名落地。
+//! 磁盘上的形态是 `<root>/<group_dir>/<subdir>/<temp_name>.part`（`temp_name` 已含
+//! `.` + 扩展名）：一个空文件 + 逐块追加，布局与 1.x 既有部署一致。文件校验（大小、
+//! MIME、整份 md5）都发生在末块，通过后由 [`PartialResource::publish`] 交给存储驱动
+//! 改名落地。
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -31,7 +32,7 @@ pub struct PartialResource {
     pub group: String,
     pub group_dir: String,
     pub group_sub_dir: String,
-    /// 临时名：`<tempBaseName>.<ext>`（不含 `.part` 后缀）。
+    /// 临时名：`<resource_temp_basename>.<ext>`（不含 `.part` 后缀）。
     pub temp_name: String,
     /// 绝对路径：`<upload_root>/<group_dir>/<subdir>/<temp_name>.part`。
     pub path: PathBuf,
@@ -43,7 +44,7 @@ pub struct PartialResource {
 
 impl PartialResource {
     /// 组装一个临时资源。分组相关配置来自本次调用的快照（`GroupSnapshot`），
-    /// 不从任何全局状态读取 —— 对应 PHP 构造函数里的那句「快照 group 配置」。
+    /// 不从任何全局状态读取 —— 快照即本次调用的全部配置来源，天然不串组。
     pub fn new(
         upload_root: &Path,
         snapshot: &GroupSnapshot,
@@ -88,7 +89,7 @@ impl PartialResource {
 
         target.lock().map_err(|_| Error::WriteResourceFail)?;
 
-        // 错误码与 PHP 对齐：分块源打不开 → upload_error；写目标失败 → write_resource_fail
+        // 错误码划分：分块源打不开 → upload_error；写目标失败 → write_resource_fail
         let written = match chunk {
             ChunkSource::Path(source) => match File::open(source) {
                 Ok(mut source) => {
@@ -112,7 +113,7 @@ impl PartialResource {
     }
 
     /// 清理：临时文件与断点文件一起删，**错误全部忽略** ——
-    /// 它出现在错误路径上，清理失败不应掩盖原始异常（PHP 用 `@unlink` 的同一取向）。
+    /// 它出现在失败路径上，清理失败不应掩盖原始失败原因。
     pub fn cleanup(&self) {
         let _ = std::fs::remove_file(&self.path);
 
@@ -131,8 +132,8 @@ impl PartialResource {
         )
     }
 
-    /// 声明大小校验 —— 对应 PHP `filterBySize()`：
-    /// `0` 一律拒绝（客户端没算出大小或算错了），超过分组上限（上限非 0 时）也拒绝。
+    /// 声明大小校验：`0` 一律拒绝（客户端没算出大小或算错了），
+    /// 超过分组上限（上限非 0 时）也拒绝。
     pub fn filter_by_size(&self, resource_size: u64) -> Result<()> {
         if resource_size == 0 || (self.max_size != 0 && resource_size > self.max_size) {
             return Err(Error::InvalidResourceSize);
@@ -141,8 +142,8 @@ impl PartialResource {
         Ok(())
     }
 
-    /// 扩展名校验 —— 对应 PHP `filterByExtension()`：
-    /// 空扩展名拒绝；白名单非空时必须在白名单内；命中黑名单一律拒绝。
+    /// 扩展名校验：空扩展名拒绝；白名单非空时必须在白名单内；
+    /// 命中黑名单一律拒绝。
     pub fn filter_by_extension(&self, resource_ext: &str) -> Result<()> {
         let not_whitelisted = !self.allowed_extensions.is_empty()
             && !self.allowed_extensions.iter().any(|e| e == resource_ext);
@@ -222,7 +223,7 @@ impl PartialResource {
         self.group_sub_dir_path().join(name)
     }
 
-    /// 建分组子目录 —— 三条语义与 PHP `createGroupSubDir()` 一致：
+    /// 建分组子目录 —— 三条语义：
     ///
     /// 1. **父目录（分组目录）必须已存在**，缺失直接失败。这是 `aetherupload:groups`
     ///    存在的原因：内核用非递归 `mkdir`，父目录没建好时报的是笼统的上传错误，

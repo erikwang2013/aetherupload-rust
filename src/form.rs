@@ -44,11 +44,11 @@ impl FormData {
         }
     }
 
-    /// 从 urlencoded 表单串构造 —— 前端 `preprocess` 发的就是这个编码
-    /// （zepto / jQuery 对普通对象 `data` 的默认 `Content-Type`）。
+    /// 从 urlencoded 表单串构造 —— `preprocess` 端点两种编码都收，这是 urlencoded
+    /// 那一路（multipart 由适配器经 [`FormData::push_file`] 装进来）。
     ///
-    /// 语义与 PHP 解析表单一致：`+` 解成空格、`%XX` 解成字节、非法百分号原样保留、
-    /// 没有 `=` 的键当空串、重名同样取最后一个。
+    /// 语义遵循 `application/x-www-form-urlencoded` 的通行解析：`+` 解成空格、
+    /// `%XX` 解成字节、非法百分号原样保留、没有 `=` 的键当空串、重名同样取最后一个。
     pub fn from_urlencoded(body: &str) -> Self {
         let mut form = Self::new();
 
@@ -73,8 +73,8 @@ impl FormData {
         self.fields.push((name.into(), FieldValue::File(body)));
     }
 
-    /// 取文本字段。**重名取最后一个** —— 与 PHP 解析表单的语义一致
-    /// （后出现的同名值覆盖先出现的）。
+    /// 取文本字段。**重名取最后一个**（后出现的同名值覆盖先出现的）—— 表单解析的
+    /// 通行语义，顺带让两端对重名输入不会得出不同答案。
     pub fn text(&self, name: &str) -> Option<&str> {
         self.fields
             .iter()
@@ -141,7 +141,7 @@ fn percent_decode(input: &str) -> String {
                         out.push(high * 16 + low);
                         index += 3;
                     }
-                    // 非法转义按 PHP 的 urldecode 处置：原样留下
+                    // 非法转义原样留下（解码器不因单个坏转义而整体失败）
                     _ => {
                         out.push(b'%');
                         index += 1;
@@ -207,7 +207,7 @@ mod tests {
         assert_eq!(form.text("resource_hash"), None);
     }
 
-    /// 重名取最后一个：PHP 解析表单就是这个语义，别让 Rust 端更「严格」而产生分歧。
+    /// 重名取最后一个：表单解析的通行语义，别让两端对同一份输入得出不同答案。
     #[test]
     fn duplicate_names_take_the_last() {
         let mut form = FormData::new();
@@ -217,7 +217,7 @@ mod tests {
         assert_eq!(form.text("group"), Some("other"));
     }
 
-    /// 前端 `preprocess` 真实发的编码：zepto 对普通对象 `data` 走 urlencoded。
+    /// urlencoded 这一路：`+` 与多字节 `%XX` 的还原。
     #[test]
     fn urlencoded_form_matches_the_frontend_payload() {
         let form = FormData::from_urlencoded(
@@ -236,15 +236,15 @@ mod tests {
         assert_eq!(preprocess.group.as_deref(), Some("file"));
     }
 
-    /// 宽松模式不发 `resource_hash`；空段、无 `=`、非法转义都要与 PHP 的解析对齐。
+    /// 宽松模式不发 `resource_hash`；空段、无 `=`、非法转义按表单通行的解码规则走。
     #[test]
-    fn urlencoded_edge_cases_follow_php() {
+    fn urlencoded_edge_cases_follow_form_decoding() {
         let form = FormData::from_urlencoded("a=1&&b&c=%zz&d=%E4%B8%AD");
 
         assert_eq!(form.text("a"), Some("1"));
         assert_eq!(form.text("b"), Some("")); // 无 `=` → 空串
         assert_eq!(form.text("c"), Some("%zz")); // 非法转义原样保留
-        assert_eq!(form.text("d"), Some("中")); // 多字节字符按字节还原（前端 encodeURIComponent 就这么发）
+        assert_eq!(form.text("d"), Some("中")); // 多字节字符按字节还原（UTF-8 逐字节百分号编码）
         assert_eq!(form.text("resource_hash"), None);
 
         // 重名同样取最后一个（与 multipart 解析一致）

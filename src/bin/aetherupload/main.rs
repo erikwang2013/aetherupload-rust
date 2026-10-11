@@ -1,6 +1,6 @@
 // Copyright (c) 2026 erik <erik@erik.xyz> — https://erik.xyz
 
-//! 运维 CLI —— 对应 PHP 版 `php webman aetherupload:groups | :build | :clean`。
+//! 运维 CLI —— `groups` / `build` / `clean` / `pet` 四个子命令。
 //!
 //! ```text
 //! aetherupload groups [--base-path DIR] [--root-dir DIR] [--group NAME]...

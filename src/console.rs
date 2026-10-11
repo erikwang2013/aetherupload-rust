@@ -1,16 +1,17 @@
 // Copyright (c) 2026 erik <erik@erik.xyz> — https://erik.xyz
 
-//! 运维命令 —— 对应 PHP 版 `src/Console/*Runner.php`（宿主再包一层命令壳）。
+//! 运维命令 —— `groups` / `build` / `clean` 三个动作；CLI 壳在 `bin/aetherupload`。
 //!
-//! 三个动作原样搬过来，包括它们的「先说清在做什么、再如实报数」的输出习惯：
+//! 输出习惯固定为「先说清在做什么、再如实报数」，且**文本沿用 1.x 既有部署的措辞**
+//! （既有运维脚本可能按行匹配）：
 //!
 //! - [`list_groups`]：建上传根目录与各分组目录（**不建就一定上传失败** —— 内核
 //!   建子目录用的是非递归 `mkdir`，缺父目录时报的是笼统的上传错误）；
 //! - [`build_redis_hashes`]：按磁盘现状重建秒传索引（每日跑，消除脏数据）；
 //! - [`clean_up_directory`]：按 mtime 回收 `_header/` 与 `*.part` 的过期临时文件。
 //!
-//! Rust 版把 PHP 的 `callable $write` 换成 `&mut dyn FnMut(&str)`，返回值仍是退出码
-//! （0 成功 / 1 失败），方便宿主直接接进自家的 CLI 或 cron 任务。
+//! 输出经 `&mut dyn FnMut(&str)` 注入（宿主可以是终端、日志或缓冲区），返回值是
+//! 退出码（0 成功 / 1 失败），方便直接接进自家 CLI 或 cron 任务。
 
 use std::path::{Path, PathBuf};
 
@@ -20,7 +21,7 @@ use crate::runtime::Runtime;
 use crate::saved_path::SavedPath;
 use crate::util::{extension_of, file_stem_of, is_safe_path_component};
 
-/// `build` 每攒够这么多条就写一批（与 PHP 的 1000 一致）。
+/// `build` 每攒够这么多条就写一批（批量提交的阈值）。
 const BUILD_BATCH: usize = 1000;
 
 fn say(write: &mut dyn FnMut(&str), message: impl AsRef<str>) {
@@ -61,7 +62,7 @@ fn run_list_groups(runtime: &Runtime, write: &mut dyn FnMut(&str)) -> Result<()>
         .filter_map(|entry| entry.file_name().into_string().ok())
         .collect();
 
-    // 分组目录逐个建（非递归，与 PHP 相同）；重复的 group_dir 只建一次
+    // 分组目录逐个建（非递归 —— 父目录缺失要报错，不能悄悄造出来）；重复的 group_dir 只建一次
     let mut created: Vec<String> = Vec::new();
 
     for group in runtime.config().groups.values() {
@@ -98,7 +99,7 @@ fn run_list_groups(runtime: &Runtime, write: &mut dyn FnMut(&str)) -> Result<()>
     say(write, "Group-Directory List:");
 
     for (group_name, group) in &runtime.config().groups {
-        // 含下划线的分组名会让 savedPath 解码错位 —— 建目录阶段就点出来
+        // 含下划线的分组名会让 saved_path 解码错位 —— 建目录阶段就点出来
         if group_name.contains('_') {
             say(
                 write,
@@ -220,7 +221,7 @@ fn run_clean_up(runtime: &Runtime, write: &mut dyn FnMut(&str), days: i64) -> Re
 
     let due = std::time::SystemTime::now() - std::time::Duration::from_secs(days as u64 * 86_400);
 
-    // 断点文件：`_header` 下**没有扩展名**的文件（与 PHP 的 pathinfo 判定一致）
+    // 断点文件：`_header` 下**没有扩展名**的文件（断点名是纯 16 位十六进制，不含点）
     let header_dir = runtime.upload_root().join(crate::header::HEADER_DIR);
 
     let invalid_headers: Vec<PathBuf> = read_dir_entries(&header_dir, EntryKind::Files)
@@ -268,7 +269,7 @@ enum EntryKind {
     Files,
 }
 
-/// 列目录（缺失目录按空处理 —— PHP 的 `opendir` 失败时同样直接返回）。
+/// 列目录（缺失目录按空处理 —— 首次部署时分组目录可能还没建）。
 fn read_dir_entries(path: &Path, kind: EntryKind) -> Vec<PathBuf> {
     let Ok(dir) = std::fs::read_dir(path) else {
         return Vec::new();
@@ -398,7 +399,7 @@ mod tests {
                 .any(|line| line.contains("2 items have been set"))
         );
 
-        // 索引命中：按 hash 查得到 savedPath
+        // 索引命中：按 hash 查得到 saved_path
         let index = runtime.instant_index();
         assert_eq!(
             index

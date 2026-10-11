@@ -1,8 +1,8 @@
 // Copyright (c) 2026 erik <erik@erik.xyz> — https://erik.xyz
 
-//! 本地磁盘驱动（默认）—— 对应 PHP 版 `Storage/LocalStorage.php`。
+//! 本地磁盘驱动（默认）。
 //!
-//! 行为与历史版本逐字节相同：`publish` 就是旧的「目标存在则删临时、否则 rename」。
+//! 落地语义与 1.x 既有部署一致：`publish` ＝「目标存在则删临时文件，否则 rename」。
 
 use std::path::{Path, PathBuf};
 
@@ -38,7 +38,7 @@ impl Storage for LocalStorage {
         let dest = self.full_path(group_dir, group_sub_dir, name);
 
         if dest.exists() {
-            // 去重语义（旧 rename() 的行为原样保留）：目标已存在即丢弃本次临时文件
+            // 去重语义（1.x 既有部署同款）：目标已存在（同 hash）即丢弃本次临时文件
             std::fs::remove_file(local_path).map_err(|_| Error::DeleteResourceFail)?;
             return Ok(());
         }
@@ -110,7 +110,7 @@ mod tests {
         assert!(storage.exists("file", "202610", "abc.jpg").unwrap());
         storage.delete("file", "202610", "abc.jpg").unwrap();
         assert!(!storage.exists("file", "202610", "abc.jpg").unwrap());
-        // local 删除缺失文件报 delete_resource_fail（与 PHP 一致；s3 才幂等）
+        // local 删除缺失文件报 delete_resource_fail（1.x 既有部署同语义；s3 才幂等）
         assert!(matches!(
             storage.delete("file", "202610", "abc.jpg"),
             Err(Error::DeleteResourceFail)

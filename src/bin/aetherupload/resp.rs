@@ -173,7 +173,7 @@ impl InstantStore for RespClient {
     }
 
     /// 本实现真的会去读旧版单 hash（`HGET aetherupload_resource`），声明能力位为真，
-    /// 从 PHP 版迁移站点的存量数据继续可命中。
+    /// 1.x 迁移站点的存量数据继续可命中。
     fn supports_legacy_fallback(&self) -> bool {
         true
     }
@@ -187,8 +187,8 @@ impl InstantStore for RespClient {
         self.command(&["HDEL", LEGACY_HASH_KEY, field]).map(|_| ())
     }
 
-    /// `KEYS prefix*` + 逐个 `DEL` —— 与 PHP 版 `deleteAll()` 同一取向：
-    /// 只在每日重建命令里调用，记录数在百万级以内可接受。
+    /// `KEYS prefix*` + 逐个 `DEL`：只在每日重建命令里调用，记录数在百万级以内
+    /// 可接受（换成 SCAN 遍历是升级路径，但不是眼下的瓶颈）。
     fn delete_prefix(&self, _prefix: &str) -> Result<()> {
         let keys = match self.command(&["KEYS", &format!("{KEY_PREFIX}*")])? {
             Reply::Array(items) => items

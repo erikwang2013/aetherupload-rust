@@ -1,10 +1,10 @@
 // Copyright (c) 2026 erik <erik@erik.xyz> — https://erik.xyz
 
-//! 纯函数工具 —— 对应 PHP 版 `Util.php` 里不依赖运行时的那部分。
+//! 纯函数工具 —— 不依赖运行时、不碰全局状态的那部分。
 //!
-//! `deleteResource` / `getResource` / `deleteRedisSavedPath` 三个需要配置与存储的
-//! 方法没有搬到这里：Rust 版把它们做成 [`crate::runtime::Runtime`] 上的方法，
-//! 显式传入依赖而不是走全局单例（见 `runtime.rs` 的说明）。
+//! 需要配置与存储的几个动作（删除成品、读取成品、清理秒传记录）不在这里：
+//! 它们是 [`crate::runtime::Runtime`] 上的方法，显式传入依赖而不是走全局单例
+//! （见 `runtime.rs` 的说明）。
 
 use std::fs::File;
 use std::io::Read;
@@ -13,11 +13,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::SubdirRule;
 
-/// 生成临时资源基础名：`bin2hex(random_bytes(8))` = 16 个小写十六进制字符。
+/// 生成临时资源基础名：8 字节随机数 → 16 个小写十六进制字符（1.x 既有断点文件
+/// 沿用的命名形态）。
 ///
 /// 熵源是操作系统 CSPRNG（`/dev/urandom`）；读不到时退化为「时间 ^ pid」种子的
 /// splitmix64 —— 名字只在 `_header`/`.part` 内部使用，且始终带内容 md5 兜底，
-/// 退化路径只影响不可猜性，不影响正确性（会在 `docs` 的差异说明里标注）。
+/// 退化路径只影响不可猜性，不影响正确性。
 pub fn generate_temp_name() -> String {
     let mut bytes = [0u8; 8];
 
@@ -59,13 +60,12 @@ fn to_hex(bytes: &[u8]) -> String {
     out
 }
 
-/// `basename.ext`；扩展名为空时只返回 basename（与 PHP 的字符串拼接一致，
-/// 调用方在拼接前已经校验过扩展名非空）。
+/// 拼接 `basename.ext`；调用方保证扩展名非空（校验发生在拼接之前）。
 pub fn get_file_name(base_name: &str, ext: &str) -> String {
     format!("{base_name}.{ext}")
 }
 
-/// 路径分量白名单 —— 对应 PHP `Util::isSafePathComponent()`，正则语义逐条对齐：
+/// 路径分量白名单 —— 客户端可控值进入路径之前必须过这一关：
 ///
 /// - `allow_dot = false`：`^[a-zA-Z0-9_\-]+$`
 /// - `allow_dot = true` ：`^[a-zA-Z0-9_\-][a-zA-Z0-9_\-\.]*$`（首字符不允许 `.`，
@@ -94,10 +94,11 @@ pub fn is_safe_path_component(value: &str, allow_dot: bool, max_length: Option<u
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || (allow_dot && c == '.'))
 }
 
-/// 分组子目录名 —— 对应 PHP `Util::generateSubDirName()`（`resource_subdir_rule`）。
+/// 分组子目录名 —— 由 `resource_subdir_rule` 决定（`year` / `date` / `const`，
+/// 缺省或未知取值按月）。
 ///
-/// 与 PHP 的差异：PHP 用服务器本地时区的 `date()`，这里用 **UTC**（零依赖下拿不到
-/// 时区数据库）。对按月/按日归档的影响只在月末月初的时区边界上。
+/// 与 1.x 既有部署的一处行为差异：这里取 **UTC**（零依赖下拿不到时区数据库），
+/// 没有「服务器本地时区」的概念；影响只在月末月初的时区边界上。
 pub fn generate_sub_dir_name(rule: SubdirRule) -> String {
     let (year, month, day) = utc_ymd();
 
@@ -105,7 +106,7 @@ pub fn generate_sub_dir_name(rule: SubdirRule) -> String {
         SubdirRule::Year => format!("{year:04}"),
         SubdirRule::Date => format!("{year:04}{month:02}{day:02}"),
         SubdirRule::Const => "subdir".to_string(),
-        // Month 与未知取值都按月（PHP 的 default 分支同样是按月）
+        // Month 与未知取值都按月（未知取值不报错，落到默认规则）
         SubdirRule::Month => format!("{year:04}{month:02}"),
     }
 }
@@ -119,7 +120,7 @@ fn utc_ymd() -> (i64, u32, u32) {
     civil_from_days(secs.div_euclid(86_400))
 }
 
-/// 天序号 → (年, 月, 日)，Howard Hinnant 的 civil_from_days（与 snowflake-rust 同款）。
+/// 天序号 → (年, 月, 日)，Howard Hinnant 的 civil_from_days 算法（纯算术，无时区表）。
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -134,20 +135,19 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
-/// 展示链接：`route_display + '/' + savedPath`（与 PHP `Util::getDisplayLink()` 一致）。
+/// 展示链接：`route_display + '/' + saved_path`（拼接形态与 1.x 既有部署一致）。
 pub fn display_link(route_display: &str, saved_path: &str) -> String {
     format!("{route_display}/{saved_path}")
 }
 
-/// 下载链接：`route_download + '/' + savedPath + '/' + newName`。
+/// 下载链接：`route_download + '/' + saved_path + '/' + new_name`。
 ///
 /// `new_name` 已经过消毒（见 [`sanitize_download_name`]），这里只做拼接。
 pub fn download_link(route_download: &str, saved_path: &str, new_name: &str) -> String {
     format!("{route_download}/{saved_path}/{new_name}")
 }
 
-/// 下载名消毒 —— 对应 PHP `preg_replace('/[\x00-\x1f\x7f"\\\\\/]/', '_', $name)`：
-/// 控制字符、DEL、双引号、反斜杠、斜杠一律替换为 `_`，防头注入与
+/// 下载名消毒：控制字符、DEL、双引号、反斜杠、斜杠一律替换为 `_`，防头注入与
 /// `Content-Disposition` 结构破坏。
 pub fn sanitize_download_name(name: &str) -> String {
     name.chars()
@@ -158,8 +158,7 @@ pub fn sanitize_download_name(name: &str) -> String {
         .collect()
 }
 
-/// 取小写扩展名（PHP `strtolower(pathinfo($name, PATHINFO_EXTENSION))` 的等价物）。
-/// 没有扩展名时返回空串。
+/// 取小写扩展名（`abc.JPG` → `jpg`）。没有扩展名时返回空串。
 pub fn extension_of(name: &str) -> String {
     Path::new(name)
         .extension()
@@ -167,7 +166,7 @@ pub fn extension_of(name: &str) -> String {
         .unwrap_or_default()
 }
 
-/// 取不含扩展名的文件名（PHP `pathinfo($name, PATHINFO_FILENAME)`）。
+/// 取不含最后一段扩展名的文件名（`a.b.c` → `a.b`）。
 pub fn file_stem_of(name: &str) -> String {
     Path::new(name)
         .file_stem()
@@ -189,9 +188,9 @@ mod tests {
         assert_ne!(a, b, "两次生成不应相同");
     }
 
-    /// 逐条对齐 PHP 的正则语义（含首字符限制这个最容易写错的边界）。
+    /// 白名单的边界语义（含首字符限制这个最容易写错的边界）。
     #[test]
-    fn safe_path_component_matches_php_regex() {
+    fn safe_path_component_boundary_semantics() {
         assert!(is_safe_path_component("file", false, None));
         assert!(is_safe_path_component("202610", false, None));
         assert!(is_safe_path_component("a-b_c", false, None));
@@ -204,13 +203,13 @@ mod tests {
         assert!(is_safe_path_component("abc123.jpg", true, None));
         assert!(
             is_safe_path_component("a..b", true, None),
-            "PHP 正则会放过中间的双点"
+            "宽松白名单会放过中间的双点"
         );
         assert!(!is_safe_path_component(".hidden", true, None));
         assert!(!is_safe_path_component("..", true, None));
         assert!(!is_safe_path_component("../etc", true, None));
 
-        // 长度上限（PHP 用 strlen 数字节；这里的取值全是 ASCII）
+        // 长度上限按字节计（这里的取值全是 ASCII，字节数即字符数）
         assert!(is_safe_path_component("abc", false, Some(3)));
         assert!(!is_safe_path_component("abcd", false, Some(3)));
     }

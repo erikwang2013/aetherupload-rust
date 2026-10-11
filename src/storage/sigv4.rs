@@ -1,8 +1,8 @@
 // Copyright (c) 2026 erik <erik@erik.xyz> — https://erik.xyz
 
-//! AWS Signature Version 4（S3 规则）—— 对应 PHP 版 `Storage/SignatureV4.php`。
+//! AWS Signature Version 4（S3 规则）。
 //!
-//! 三条 S3 专属规则（照抄 PHP）：路径**逐段** URI 编码、不做点段归一化、不双重编码。
+//! 三条 S3 专属的规范化规则：路径**逐段** URI 编码、不做点段归一化、不双重编码。
 //!
 //! 全是纯函数：没有时钟也没有 IO —— `amz_date`（`YYYYMMDDTHHMMSSZ`）由调用方传入，
 //! 单测因此能把时刻钉死，直接比对官方测试套件的固定输出。
@@ -204,7 +204,7 @@ impl<'a> Signer<'a> {
         )
     }
 
-    /// 预签名查询串（含 `X-Amz-Signature`），供 URL 拼接 —— 对应 PHP `presignQuery()`。
+    /// 预签名查询串（含 `X-Amz-Signature`），供 URL 拼接。
     ///
     /// 预签名的 payload 位恒为 [`UNSIGNED_PAYLOAD`]（下载方不会重算内容哈希）。
     /// `query` 里已有的参数与 `X-Amz-*` 合并后统一编码一次、排序一次。
@@ -275,7 +275,7 @@ fn normalized_headers(headers: &[(String, String)]) -> BTreeMap<String, String> 
     headers
         .iter()
         .map(|(name, value)| {
-            // PHP 是 `preg_replace('/\s+/', ' ', trim($value))`：折叠空白是规范的一部分
+            // 头值要先去掉首尾空白、把内部连续空白折叠成一个空格 —— 这是规范要求的归一化
             (
                 name.to_lowercase(),
                 value.split_whitespace().collect::<Vec<_>>().join(" "),
@@ -314,8 +314,9 @@ fn encoded_query_pairs(query: &str) -> Vec<(String, String)> {
     pairs
 }
 
-/// `%XX` 解码；非法序列原样保留（与 PHP `rawurldecode` 同取向）。
-/// 注意：`+` **不**解码成空格 —— 那是 `urldecode`/表单语义。
+/// `%XX` 解码；非法序列原样保留（解码器不因单个坏转义而整体失败）。
+/// 注意：`+` **不**解码成空格 —— URL 路径/查询语义里 `+` 就是字面加号，
+/// 只有表单编码才把 `+` 当空格。
 fn percent_decode(input: &str) -> Vec<u8> {
     let bytes = input.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());

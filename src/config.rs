@@ -1,19 +1,17 @@
 // Copyright (c) 2026 erik <erik@erik.xyz> — https://erik.xyz
 
-//! 配置结构与分组解析 —— 对应 PHP 版 `config/aetherupload.php` + `ConfigMapper.php`。
+//! 配置结构与分组解析。
 //!
-//! 键名与 PHP 版逐字相同（`root_dir` / `chunk_size` / `resource_subdir_rule` …），
-//! 便于对照迁移；Rust 用结构体承载，编译期就能发现拼错的键。
+//! 键名沿用 1.x 既有部署（`root_dir` / `chunk_size` / `resource_subdir_rule` …），
+//! 便于照旧配置迁移；用结构体承载，则拼错的键在编译期就报出来。
 //!
-//! **与 PHP 的两点结构性差异**：
+//! **两点结构性选择**：
 //!
-//! 1. PHP 的 `ConfigMapper` 是进程级单例 + 每请求 `applyGroupConfig()` 快照，
-//!    因为常驻进程/协程下多个请求会交错。Rust 版没有单例：一次上传调用开始时
-//!    用 [`Config::resolve_group`] 解析出 [`GroupSnapshot`]，之后全程只读它
-//!    —— 同样的隔离效果，不需要锁，也不可能串组。
-//! 2. PHP 有四个 `middleware_*` 配置（把回调名交给宿主框架）。Rust 版不做中间件
-//!    注册表：宿主直接用自己的中间件机制（Axum 的 `layer`、Actix 的 `wrap` 等），
-//!    路由路径由 `route_*` 给出，见各 `integrations/`。
+//! 1. 没有进程级单例：一次上传调用开始时用 [`Config::resolve_group`] 解析出
+//!    [`GroupSnapshot`]，之后全程只读它 —— 常驻进程/协程下多请求交错也天然
+//!    不串组，不需要锁。
+//! 2. 不做中间件注册表：宿主直接用自家框架的中间件机制（Axum 的 `layer`、
+//!    Actix 的 `wrap` 等），路由路径由 `route_*` 给出，见各 `integrations/`。
 
 use std::collections::BTreeMap;
 
@@ -30,8 +28,7 @@ pub enum SubdirRule {
 }
 
 impl SubdirRule {
-    /// 解析配置里的字符串；**未知取值按月**（与 PHP `generateSubDirName()` 的
-    /// `default` 分支一致）。
+    /// 解析配置里的字符串；**未知取值按月**（未知值不报错，落到默认规则）。
     pub fn parse(value: &str) -> Self {
         match value {
             "year" => Self::Year,
@@ -50,7 +47,7 @@ pub enum StorageDriver {
     S3,
 }
 
-/// S3 驱动配置（对应 `storage.s3`）。字段名与 PHP 版一致。
+/// S3 驱动配置（对应 `storage.s3`）。字段名沿用 1.x 既有部署。
 #[derive(Debug, Clone)]
 pub struct S3Config {
     /// 留空 = AWS 默认（按 region 推导）；自托管填自家端点。
@@ -113,7 +110,7 @@ pub struct GroupConfig {
     pub event_upload_complete: bool,
 }
 
-/// 插件配置。字段与 `config/aetherupload.php` 一一对应。
+/// 插件配置。字段名沿用 1.x 既有部署（便于照旧配置迁移）。
 #[derive(Debug, Clone)]
 pub struct Config {
     /// 对应 `enable`：宿主可据此决定是否挂载路由。
@@ -144,7 +141,7 @@ pub struct Config {
 }
 
 impl Default for Config {
-    /// 与 PHP `config/aetherupload.php` 的默认值逐项一致（含默认 `file` 分组）。
+    /// 默认值与 1.x 既有部署逐项一致（含默认 `file` 分组）。
     fn default() -> Self {
         Self {
             enable: true,
@@ -190,12 +187,12 @@ impl Default for Config {
 }
 
 impl Config {
-    /// 解析分组，得到本次调用全程使用的配置快照 —— 对应 PHP `ConfigMapper::applyGroupConfig()`。
+    /// 解析分组，得到本次调用全程使用的配置快照。
     ///
-    /// 两条拒绝规则原样搬过来：
-    /// - 分组名含下划线 → [`Error::InvalidOperation`]。分组名参与 `savedPath` 的
-    ///   `_` 分隔编码，含下划线会让解码错位、该分组下资源永久 404。PHP 在配置与上传
-    ///   两个阶段都会拦；Rust 版在这里（唯一的解析入口）拦一次。
+    /// 两条拒绝规则（对上协议 §4 的 `invalid_group`）：
+    /// - 分组名含下划线 → [`Error::InvalidOperation`]。分组名参与 `saved_path` 的
+    ///   `_` 分隔编码，含下划线会让解码错位、该分组下资源永久 404；这里是唯一的
+    ///   解析入口，拦一次就够。
     /// - 分组不存在 → [`Error::InvalidOperation`]。
     pub fn resolve_group(&self, group: &str) -> Result<GroupSnapshot> {
         if group.is_empty() || group.contains('_') {
@@ -234,7 +231,7 @@ impl Config {
 /// 一次调用（一个请求）的配置快照：分组配置 + 相关全局项。
 ///
 /// 上传/读取的下游函数全部接收 `&GroupSnapshot` 而不是 `&Config` —— 这样「一组一快照、
-/// 全程不换」在类型上就成立了（PHP 版靠每请求重建 ConfigMapper 实例达到同样效果）。
+/// 全程不换」在类型上就成立：拿不到 `Config`，配置就不可能中途被换掉。
 #[derive(Debug, Clone)]
 pub struct GroupSnapshot {
     pub group: String,
@@ -261,7 +258,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_match_the_php_config() {
+    fn defaults_match_the_1x_config() {
         let config = Config::default();
 
         assert!(config.enable);
@@ -298,7 +295,7 @@ mod tests {
         assert_eq!(snapshot.group_dir, "file");
         assert_eq!(snapshot.chunk_size, config.chunk_size);
 
-        // 含下划线的分组名会让 savedPath 解码错位 —— 一律拒绝
+        // 含下划线的分组名会让 saved_path 解码错位 —— 一律拒绝
         assert!(matches!(
             config.resolve_group("my_file"),
             Err(Error::InvalidOperation)
