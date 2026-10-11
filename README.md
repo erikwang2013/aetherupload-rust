@@ -173,6 +173,8 @@ aetherupload-rust/
 
 ## 协议（2.0）
 
+完整规范（含全部 code 与边界语义）见 [docs/protocol.md](docs/protocol.md)（英文版：[docs/i18n/protocol.en.md](docs/i18n/protocol.en.md)）。
+
 **端点**：路径与配置项不变，请求字段名本就是 snake_case，保持不变。
 
 | # | 方法 + 路径 | 请求 |

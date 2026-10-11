@@ -173,6 +173,8 @@ On success the upload endpoints return the snake_case **upload result** (HTTP 20
 
 ## Protocol (2.0)
 
+The full specification (all codes and boundary semantics) is in [protocol.en.md](protocol.en.md) (Chinese: [../protocol.md](../protocol.md)).
+
 **Endpoints**: paths and configuration keys are unchanged, and the request field names were already snake_case — unchanged.
 
 | # | Method + path | Request |
