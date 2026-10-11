@@ -43,9 +43,13 @@
     <h1><img src="/aetherupload-assets/pet.svg" alt="以太兽"/>AetherUpload 示例页</h1>
     <div class="sub">以太兽 · Aether Beast —— 头顶箭头是整份文件，腹部进度条是正在追加的分块</div>
 
-    <form method="post" action="/">
+    <form method="post" action="/" id="aetherupload-wrapper">
         <label>选择要上传的文件（选完立即开始分块上传）</label>
         <!--
+          最外层需要一个 id 为 aetherupload-wrapper 的节点：组件在它内部找
+          #aetherupload-resource / #aetherupload-output / #aetherupload-savedpath，
+          缺了它整条上传链在第一步就会断（JS 读 .files 时报 undefined）。
+          其余约定：
           需要一个 id 为 aetherupload-resource 的文件节点；
           setGroup(...)            指定分组（必须已在配置里存在，且不含下划线）
           setSavedPathField(...)   上传成功后把 savedPath 自动填进的节点

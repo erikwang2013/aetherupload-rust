@@ -141,7 +141,15 @@ var AetherUpload = {
 
     preprocess: function () { //预处理
 
-        var _this = this;
+        var _this = this,
+
+            form = new FormData();
+
+        form.append('resource_name', _this.resourceName);
+        form.append('resource_size', _this.resourceSize);
+        form.append('resource_hash', _this.resourceHash);
+        form.append('locale', _this.locale);
+        form.append('group', _this.group);
 
         $.ajax({
 
@@ -153,6 +161,8 @@ var AetherUpload = {
 
             type: 'POST',
 
+            data: form,
+
             dataType: 'json',
 
             xhrFields: {
@@ -161,19 +171,9 @@ var AetherUpload = {
 
             crossDomain: true,
 
-            data: {
+            processData: false,
 
-                resource_name: _this.resourceName,
-
-                resource_size: _this.resourceSize,
-
-                resource_hash: _this.resourceHash,
-
-                locale: _this.locale,
-
-                group: _this.group
-
-            },
+            contentType: false,
 
             success: function (rst) {
 

@@ -19,7 +19,7 @@ The file is sliced in the browser, appended chunk by chunk to a temporary file o
 
 ## Project overview
 
-This project is ported from the PHP large-file upload package [AetherUpload-Webman](https://github.com/erikwang2013/aetherupload-webman) (itself descended from [AetherUpload-Laravel](https://github.com/peinhu/AetherUpload-Laravel)), with configuration reading, concurrency handling, and the storage layer rewritten for the Rust ecosystem. **The protocol matches the PHP version field for field**: the frontend script works as-is, and the field names (`resource_name` / `resource_chunk` / `chunk_index` …), error messages, `savedPath` addressing, and on-disk layout are unchanged.
+This project is ported from the PHP large-file upload package [AetherUpload-Webman](https://github.com/erikwang2013/aetherupload-webman) (itself descended from [AetherUpload-Laravel](https://github.com/peinhu/AetherUpload-Laravel)), with configuration reading, concurrency handling, and the storage layer rewritten for the Rust ecosystem. **The protocol matches the PHP version field for field**: the PHP frontend script works as-is (it sends urlencoded, the bundled copy sends multipart — the Rust side takes both), and the field names (`resource_name` / `resource_chunk` / `chunk_index` …), error messages, `savedPath` addressing, and on-disk layout are unchanged.
 
 **What it solves**
 
@@ -169,7 +169,7 @@ Four routes, two response shapes:
 
 Errors on the upload endpoints are always **HTTP 200 with an `error` field** (matching the PHP version; the frontend tests `error` for truthiness); read-path failures are 404 plain text (`display fail` / `download fail`).
 
-`route_preprocess` accepts both form encodings: **urlencoded** (what the bundled `aetherupload-all.js` sends — zepto's default for a plain object) and **multipart** (hand-built requests), as wide as PHP's `request()->input()` — same field names either way, duplicates take the last one. `route_uploading` always carries a file field, so it takes multipart only.
+`route_preprocess` accepts both form encodings: **multipart** (what the bundled `aetherupload-all.js` sends — the same shape as `uploadChunk`) and **urlencoded** (what the PHP original script sends; also common among third-party clients), as wide as PHP's `request()->input()` — same field names either way, duplicates take the last one. `route_uploading` always carries a file field, so it takes multipart only.
 
 ## Upload lifecycle
 
@@ -261,7 +261,7 @@ match guard.routes().classify(method, path) {
 }
 ```
 
-Form fields are assembled with `FormData::from_pairs(...)` (text fields) plus `push_file("resource_chunk", ChunkBody::Bytes(..))` — duplicate names take the last one, matching how PHP parses forms. If your own server only has the raw `application/x-www-form-urlencoded` string (which is what the frontend script's `preprocess` sends), feed it straight to `FormData::from_urlencoded(...)` instead of percent-decoding it yourself.
+Form fields are assembled with `FormData::from_pairs(...)` (text fields) plus `push_file("resource_chunk", ChunkBody::Bytes(..))` — duplicate names take the last one, matching how PHP parses forms. If your own server only has the raw `application/x-www-form-urlencoded` string (which is what the PHP original script's `preprocess` sends), feed it straight to `FormData::from_urlencoded(...)` instead of percent-decoding it yourself.
 
 The three shapes of `ResourceResponse` (`Redirect` / `AccelRedirect` / `ServeFile`) each carry their own `status()` and `headers()`; `ServeFile`'s attachment name lives in `download_name`, and the attachment header is produced by `aetherupload::controller::attachment_disposition(name)` (the eight adapters do the same) — for a complete example see `resource_response_to_http()` in `tests/guard.rs`.
 

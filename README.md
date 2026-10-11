@@ -19,7 +19,7 @@
 
 ## 项目说明
 
-本项目移植自 PHP 大文件上传扩展包 [AetherUpload-Webman](https://github.com/erikwang2013/aetherupload-webman)（一脉相承自 [AetherUpload-Laravel](https://github.com/peinhu/AetherUpload-Laravel)），并为 Rust 生态重写了配置读取、并发处理与存储层。**协议与 PHP 版逐字段一致**：前端脚本原样可用，字段名（`resource_name` / `resource_chunk` / `chunk_index` …）、错误文案、`savedPath` 寻址、磁盘布局都没变。
+本项目移植自 PHP 大文件上传扩展包 [AetherUpload-Webman](https://github.com/erikwang2013/aetherupload-webman)（一脉相承自 [AetherUpload-Laravel](https://github.com/peinhu/AetherUpload-Laravel)），并为 Rust 生态重写了配置读取、并发处理与存储层。**协议与 PHP 版逐字段一致**：前端脚本原样可用（PHP 版发 urlencoded、库里自带的那份发 multipart，Rust 端两种都收），字段名（`resource_name` / `resource_chunk` / `chunk_index` …）、错误文案、`savedPath` 寻址、磁盘布局都没变。
 
 **它解决什么**
 
@@ -169,7 +169,7 @@ aetherupload-rust/
 
 上传接口的错误一律 **HTTP 200 + `error` 字段**（与 PHP 版一致，前端按 `error` 真值判断）；读路径的失败是 404 文本（`display fail` / `download fail`）。
 
-`route_preprocess` 的表单编码两种都收：**urlencoded**（前端脚本 `aetherupload-all.js` 用 zepto 的默认编码发它）与 **multipart**（手工构造的请求），与 PHP 的 `request()->input()` 同宽 —— 解出来的字段名一样，重名取最后一个。`route_uploading` 一定带文件字段，只收 multipart。
+`route_preprocess` 的表单编码两种都收：**multipart**（库里自带的 `aetherupload-all.js` 发它，与 `uploadChunk` 同一种形态）与 **urlencoded**（PHP 原版脚本发它，第三方客户端也常见），与 PHP 的 `request()->input()` 同宽 —— 解出来的字段名一样，重名取最后一个。`route_uploading` 一定带文件字段，只收 multipart。
 
 ## 上传生命周期
 
@@ -261,7 +261,7 @@ match guard.routes().classify(method, path) {
 }
 ```
 
-表单字段用 `FormData::from_pairs(...)`（文本字段）+ `push_file("resource_chunk", ChunkBody::Bytes(..))` 组装 —— 重名取最后一个，与 PHP 解析表单的语义一致。若自己的服务器只拿到 `application/x-www-form-urlencoded` 的原始串（前端脚本的 `preprocess` 就是这样），直接喂 `FormData::from_urlencoded(...)`，不必自己解 percent 编码。
+表单字段用 `FormData::from_pairs(...)`（文本字段）+ `push_file("resource_chunk", ChunkBody::Bytes(..))` 组装 —— 重名取最后一个，与 PHP 解析表单的语义一致。若自己的服务器只拿到 `application/x-www-form-urlencoded` 的原始串（PHP 原版脚本的 `preprocess` 就是这样），直接喂 `FormData::from_urlencoded(...)`，不必自己解 percent 编码。
 
 `ResourceResponse` 的三种形态（`Redirect` / `AccelRedirect` / `ServeFile`）各自带好 `status()` 与 `headers()`；`ServeFile` 的附件名在 `download_name` 里，附件头用 `aetherupload::controller::attachment_disposition(name)` 生成（八个适配器也是这么做的）—— 完整示例见 `tests/guard.rs` 里的 `resource_response_to_http()`。
 

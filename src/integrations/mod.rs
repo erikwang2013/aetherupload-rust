@@ -17,12 +17,11 @@
 //! | `bee-rust` | bee_router 1 | axum 之上的路由封装（复用 axum 适配层） |
 //! | `ecat`  | ecat 4 | e-cat 的 HTTP 传输即 axum `Router`（复用 axum 适配层） |
 //!
-//! 前端字段名与 PHP 版一致（`resource_name` / `resource_chunk` / `chunk_index` …），
-//! 因此 PHP 版的前端脚本 `aetherupload-all.js` 不用改一行就能对着 Rust 端跑。
+//! 前端字段名与 PHP 版一致（`resource_name` / `resource_chunk` / `chunk_index` …）。
 //!
-//! 表单编码同样照 PHP 的收法：`preprocess` 同时吃 urlencoded 与 multipart
-//! （前端脚本用 zepto 的默认编码 urlencoded 发它，分块上传才是 multipart），
-//! 两种都翻成同一个 [`FormData`]；分块路由只可能是 multipart。
+//! 表单编码两种都收（与 PHP 的 `request()->input()` 同宽）：`preprocess` 认 urlencoded
+//! 与 multipart —— 库里自带的脚本（[`crate::assets`]）发 multipart，PHP 原版脚本发
+//! urlencoded，两种都翻成同一个 [`FormData`]；分块路由只可能是 multipart。
 
 #[cfg(feature = "actix")]
 pub mod actix;
