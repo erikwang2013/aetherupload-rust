@@ -267,7 +267,9 @@ async fn full_upload_flow_through_axum() {
 
         if index + 1 == total {
             assert!(
-                !json_value(&last_body, "saved_path").unwrap_or("").is_empty(),
+                !json_value(&last_body, "saved_path")
+                    .unwrap_or("")
+                    .is_empty(),
                 "末块必须给出 saved_path：{last_body}"
             );
         } else {
@@ -480,7 +482,9 @@ async fn problem_responses_carry_the_2_0_shape() {
 
     let response = router
         .clone()
-        .oneshot(chunk_request(1, total, &temp_base, &sub_dir, &hash, chunks[0]))
+        .oneshot(chunk_request(
+            1, total, &temp_base, &sub_dir, &hash, chunks[0],
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -488,7 +492,9 @@ async fn problem_responses_carry_the_2_0_shape() {
     // 跳号（跳过第 2 块直接发第 3 块）→ expected_index 指回缺口
     let response = router
         .clone()
-        .oneshot(chunk_request(3, total, &temp_base, &sub_dir, &hash, chunks[2]))
+        .oneshot(chunk_request(
+            3, total, &temp_base, &sub_dir, &hash, chunks[2],
+        ))
         .await
         .unwrap();
     assert_out_of_order(response, 2).await;
@@ -496,7 +502,9 @@ async fn problem_responses_carry_the_2_0_shape() {
     // 重发已落块（第 1 块）→ 同样 409，expected_index 不变
     let response = router
         .clone()
-        .oneshot(chunk_request(1, total, &temp_base, &sub_dir, &hash, chunks[0]))
+        .oneshot(chunk_request(
+            1, total, &temp_base, &sub_dir, &hash, chunks[0],
+        ))
         .await
         .unwrap();
     assert_out_of_order(response, 2).await;
@@ -519,7 +527,10 @@ async fn problem_responses_carry_the_2_0_shape() {
 
         if index == total {
             let body = body_text(response).await;
-            assert!(!json_value(&body, "saved_path").unwrap_or("").is_empty(), "{body}");
+            assert!(
+                !json_value(&body, "saved_path").unwrap_or("").is_empty(),
+                "{body}"
+            );
         }
     }
 
@@ -574,21 +585,11 @@ async fn problem_responses_carry_the_2_0_shape() {
 
     let response = small_router
         .oneshot(chunk_request(
-            1,
-            1,
-            &temp_base,
-            &sub_dir,
-            &big_hash,
-            &big_chunk,
+            1, 1, &temp_base, &sub_dir, &big_hash, &big_chunk,
         ))
         .await
         .unwrap();
-    assert_problem(
-        response,
-        StatusCode::PAYLOAD_TOO_LARGE,
-        "payload_too_large",
-    )
-    .await;
+    assert_problem(response, StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large").await;
 
     let _ = std::fs::remove_dir_all(&small_root);
 

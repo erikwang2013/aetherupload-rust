@@ -372,7 +372,14 @@ async fn problem_responses_carry_the_2_0_shape() {
             "content-type",
             format!("multipart/form-data; boundary={BOUNDARY}"),
         )
-        .body(chunk_body(1, 1, "0123456789abcdef", "202610", "", b"orphan"))
+        .body(chunk_body(
+            1,
+            1,
+            "0123456789abcdef",
+            "202610",
+            "",
+            b"orphan",
+        ))
         .reply(&routes)
         .await;
     assert_problem(&response, StatusCode::CONFLICT, "upload_not_prepared");
@@ -413,7 +420,14 @@ async fn problem_responses_carry_the_2_0_shape() {
             "content-type",
             format!("multipart/form-data; boundary={BOUNDARY}"),
         )
-        .body(chunk_body(total, 1, &temp_base_name, &sub_dir, &md5, chunks[0]))
+        .body(chunk_body(
+            total,
+            1,
+            &temp_base_name,
+            &sub_dir,
+            &md5,
+            chunks[0],
+        ))
         .reply(&routes)
         .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -426,7 +440,14 @@ async fn problem_responses_carry_the_2_0_shape() {
             "content-type",
             format!("multipart/form-data; boundary={BOUNDARY}"),
         )
-        .body(chunk_body(total, 3, &temp_base_name, &sub_dir, &md5, chunks[2]))
+        .body(chunk_body(
+            total,
+            3,
+            &temp_base_name,
+            &sub_dir,
+            &md5,
+            chunks[2],
+        ))
         .reply(&routes)
         .await;
     assert_out_of_order(&response, 2);
@@ -439,7 +460,14 @@ async fn problem_responses_carry_the_2_0_shape() {
             "content-type",
             format!("multipart/form-data; boundary={BOUNDARY}"),
         )
-        .body(chunk_body(total, 1, &temp_base_name, &sub_dir, &md5, chunks[0]))
+        .body(chunk_body(
+            total,
+            1,
+            &temp_base_name,
+            &sub_dir,
+            &md5,
+            chunks[0],
+        ))
         .reply(&routes)
         .await;
     assert_out_of_order(&response, 2);
@@ -513,11 +541,7 @@ async fn problem_responses_carry_the_2_0_shape() {
         ))
         .reply(&routes)
         .await;
-    assert_problem(
-        &response,
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "hash_mismatch",
-    );
+    assert_problem(&response, StatusCode::UNPROCESSABLE_ENTITY, "hash_mismatch");
 
     // 框架层 body 上限（= chunk_size + 1MB，warp 侧是 `content_length_limit`）先把关：
     // 超限请求到不了内核，适配层 catcher 也必须统一成 413 + payload_too_large（§11.4）
@@ -549,7 +573,11 @@ async fn problem_responses_carry_the_2_0_shape() {
         ))
         .reply(&small_routes)
         .await;
-    assert_problem(&response, StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large");
+    assert_problem(
+        &response,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "payload_too_large",
+    );
 
     let _ = std::fs::remove_dir_all(&small_root);
     let _ = std::fs::remove_dir_all(&root);

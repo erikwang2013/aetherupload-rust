@@ -46,7 +46,12 @@ fn expected_index(problem: &Problem) -> usize {
         .iter()
         .find(|(key, _)| *key == "expected_index")
         .and_then(|(_, value)| value.parse().ok())
-        .unwrap_or_else(|| panic!("chunk_out_of_order 必须带 expected_index：{}", problem.to_json()))
+        .unwrap_or_else(|| {
+            panic!(
+                "chunk_out_of_order 必须带 expected_index：{}",
+                problem.to_json()
+            )
+        })
 }
 
 /// 线程外的准备步骤：成功就取出，失败就带问题响应 panic。
@@ -466,7 +471,8 @@ fn concurrent_resend_of_a_received_chunk_never_appends_twice() {
                         describe(problem)
                     );
                     assert_eq!(
-                        problem.code, "chunk_out_of_order",
+                        problem.code,
+                        "chunk_out_of_order",
                         "round={round} worker={worker}：{}",
                         describe(problem)
                     );
@@ -646,7 +652,10 @@ fn concurrent_first_sends_of_the_same_chunk_never_double_append() {
 
         let content = format!("first-send-round-{round}-").repeat(40).into_bytes();
         let hash = md5_hex(&content);
-        let pre = take_ok(preprocess(&uploader, "file", "first.txt", &content), "预处理");
+        let pre = take_ok(
+            preprocess(&uploader, "file", "first.txt", &content),
+            "预处理",
+        );
         assert!(pre.saved_path.is_empty(), "round={round}：预处理不该秒传");
 
         let chunks: Vec<&[u8]> = content.chunks(CHUNK).collect();
@@ -696,7 +705,8 @@ fn concurrent_first_sends_of_the_same_chunk_never_double_append() {
                         describe(problem)
                     );
                     assert_eq!(
-                        problem.code, "chunk_out_of_order",
+                        problem.code,
+                        "chunk_out_of_order",
                         "round={round} worker={worker}：{}",
                         describe(problem)
                     );

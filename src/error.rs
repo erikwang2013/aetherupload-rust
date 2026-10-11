@@ -149,10 +149,7 @@ mod tests {
             (Error::CreateSubfolderFail, (500, "internal_error")),
             (Error::WriteHeaderFail, (500, "internal_error")),
             (Error::UploadError, (500, "internal_error")),
-            (
-                Error::Backend("redis down".into()),
-                (500, "internal_error"),
-            ),
+            (Error::Backend("redis down".into()), (500, "internal_error")),
         ] {
             assert_eq!(err.outcome(), Some(expected), "{err:?}");
         }
@@ -173,7 +170,10 @@ mod tests {
     #[test]
     fn problem_titles_follow_the_request_locale() {
         let zh = error_problem(&Error::HashMismatch, Some("zh-CN"));
-        assert_eq!(zh.to_json(), r#"{"type":"about:blank","title":"错误：文件完整性校验不通过","status":422,"code":"hash_mismatch"}"#);
+        assert_eq!(
+            zh.to_json(),
+            r#"{"type":"about:blank","title":"错误：文件完整性校验不通过","status":422,"code":"hash_mismatch"}"#
+        );
 
         let en = error_problem(&Error::InvalidGroup, None);
         assert_eq!(en.title, "Error: invalid upload group");

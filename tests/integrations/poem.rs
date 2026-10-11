@@ -206,7 +206,12 @@ async fn problem_responses_carry_the_2_0_shape() {
         .multipart(TestForm::new().text("resource_name", "x.txt"))
         .send()
         .await;
-    assert_problem(response, poem::http::StatusCode::BAD_REQUEST, "invalid_parameter").await;
+    assert_problem(
+        response,
+        poem::http::StatusCode::BAD_REQUEST,
+        "invalid_parameter",
+    )
+    .await;
 
     // 未配置的分组 → 400 invalid_group
     let response = client
@@ -219,15 +224,32 @@ async fn problem_responses_carry_the_2_0_shape() {
         )
         .send()
         .await;
-    assert_problem(response, poem::http::StatusCode::BAD_REQUEST, "invalid_group").await;
+    assert_problem(
+        response,
+        poem::http::StatusCode::BAD_REQUEST,
+        "invalid_group",
+    )
+    .await;
 
     // 没预处理直接打分块 → 409 upload_not_prepared
     let response = client
         .post(&uploading_path)
-        .multipart(chunk_form(1, 1, "0123456789abcdef", "202610", "", b"orphan"))
+        .multipart(chunk_form(
+            1,
+            1,
+            "0123456789abcdef",
+            "202610",
+            "",
+            b"orphan",
+        ))
         .send()
         .await;
-    assert_problem(response, poem::http::StatusCode::CONFLICT, "upload_not_prepared").await;
+    assert_problem(
+        response,
+        poem::http::StatusCode::CONFLICT,
+        "upload_not_prepared",
+    )
+    .await;
 
     // 预处理后：跳号与重发已落块都是 409 chunk_out_of_order + expected_index
     let content = b"0123456789abcdefghij"; // 20 字节 → 按 7 切成 3 块
@@ -322,7 +344,12 @@ async fn problem_responses_carry_the_2_0_shape() {
         .get(format!("{display_path}/file_202610_missing.txt"))
         .send()
         .await;
-    assert_problem(response, poem::http::StatusCode::NOT_FOUND, "resource_not_found").await;
+    assert_problem(
+        response,
+        poem::http::StatusCode::NOT_FOUND,
+        "resource_not_found",
+    )
+    .await;
 
     // 两种编码都不认的 content-type：适配层自己的解析失败 → 400 invalid_request_body
     let response = client
@@ -331,7 +358,12 @@ async fn problem_responses_carry_the_2_0_shape() {
         .body("{}")
         .send()
         .await;
-    assert_problem(response, poem::http::StatusCode::BAD_REQUEST, "invalid_request_body").await;
+    assert_problem(
+        response,
+        poem::http::StatusCode::BAD_REQUEST,
+        "invalid_request_body",
+    )
+    .await;
 
     // TODO(2.0 §11.4)：框架层 body 上限（= chunk_size + 1MB）被拒时的 413 payload_too_large
     // 本层未覆盖 —— 需构造 >1MB 的 multipart 体并确认 poem 的限额拒绝被 catcher 统一；
@@ -397,7 +429,12 @@ async fn assert_problem(
 
 /// 409 chunk_out_of_order：在问题响应基础上再断言 expected_index 指向缺口。
 async fn assert_out_of_order(response: TestResponse, expected_index: usize) {
-    let json = assert_problem(response, poem::http::StatusCode::CONFLICT, "chunk_out_of_order").await;
+    let json = assert_problem(
+        response,
+        poem::http::StatusCode::CONFLICT,
+        "chunk_out_of_order",
+    )
+    .await;
     assert_eq!(
         json_field(&json, "expected_index"),
         expected_index.to_string(),

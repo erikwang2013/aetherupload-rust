@@ -70,7 +70,12 @@ async fn upload_then_display_and_download() {
 
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(
-        resp.headers().get(header::CONTENT_TYPE).unwrap().to_str().unwrap().starts_with("application/json"),
+        resp.headers()
+            .get(header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("application/json"),
         "成功体必须是 application/json"
     );
 
@@ -348,10 +353,7 @@ async fn problem_responses_carry_the_2_0_shape() {
 
         if index == total {
             let body = text(test::read_body(resp).await);
-            assert!(
-                !json_field(&body, "saved_path").is_empty(),
-                "{body}"
-            );
+            assert!(!json_field(&body, "saved_path").is_empty(), "{body}");
         }
     }
 
@@ -448,9 +450,16 @@ where
 
     let body = text(test::read_body(resp).await);
     assert_eq!(json_field(&body, "type"), "about:blank", "{body}");
-    assert_eq!(json_field(&body, "status"), status.as_u16().to_string(), "{body}");
+    assert_eq!(
+        json_field(&body, "status"),
+        status.as_u16().to_string(),
+        "{body}"
+    );
     assert_eq!(json_field(&body, "code"), code, "{body}");
-    assert!(!json_field(&body, "title").is_empty(), "title 必须非空：{body}");
+    assert!(
+        !json_field(&body, "title").is_empty(),
+        "title 必须非空：{body}"
+    );
 
     body
 }

@@ -305,7 +305,10 @@ impl Harness {
             last = self.save_chunk(ctx, &pre, group, content, index, total, chunk);
 
             if index == total {
-                assert!(!last.saved_path.is_empty(), "{ctx}：末块必须给出 saved_path");
+                assert!(
+                    !last.saved_path.is_empty(),
+                    "{ctx}：末块必须给出 saved_path"
+                );
             } else {
                 assert!(
                     last.saved_path.is_empty(),

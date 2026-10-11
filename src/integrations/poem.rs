@@ -105,11 +105,11 @@ async fn preprocess(Data(runtime): Data<&Arc<Runtime>>, req: &Request, body: Bod
         }
     };
 
-    let triple = match UploadController::new(runtime.clone()).preprocess(&form.to_preprocess_request())
-    {
-        Ok(ok) => ok_response(upload_ok_to_json(&ok)),
-        Err(problem) => problem_response(&problem),
-    };
+    let triple =
+        match UploadController::new(runtime.clone()).preprocess(&form.to_preprocess_request()) {
+            Ok(ok) => ok_response(upload_ok_to_json(&ok)),
+            Err(problem) => problem_response(&problem),
+        };
 
     json_response(triple)
 }
@@ -127,11 +127,11 @@ async fn save_chunk(Data(runtime): Data<&Arc<Runtime>>, req: &Request, body: Bod
         Err(_) => return json_response(invalid_request_body_response(None)),
     };
 
-    let triple = match UploadController::new(runtime.clone()).save_chunk(&form.to_save_chunk_request())
-    {
-        Ok(ok) => ok_response(save_chunk_ok_to_json(&ok)),
-        Err(problem) => problem_response(&problem),
-    };
+    let triple =
+        match UploadController::new(runtime.clone()).save_chunk(&form.to_save_chunk_request()) {
+            Ok(ok) => ok_response(save_chunk_ok_to_json(&ok)),
+            Err(problem) => problem_response(&problem),
+        };
 
     json_response(triple)
 }

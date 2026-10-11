@@ -192,8 +192,8 @@ pub fn save_chunk_ok_to_json(ok: &SaveChunkOk) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::controller::upload::{PreprocessOk, SaveChunkOk};
     use super::*;
+    use crate::controller::upload::{PreprocessOk, SaveChunkOk};
 
     #[test]
     fn problem_body_has_the_frozen_fields() {
@@ -221,7 +221,11 @@ mod tests {
         );
 
         // 缺省语种是 en
-        assert!(Problem::resource_not_found(None).title.starts_with("Error:"));
+        assert!(
+            Problem::resource_not_found(None)
+                .title
+                .starts_with("Error:")
+        );
 
         let body = Problem::invalid_request_body(Some("zh"));
         assert_eq!(body.status(), 400);
@@ -267,7 +271,12 @@ mod tests {
     #[test]
     fn escaping_follows_json_rules() {
         // 非 ASCII 不转义、斜杠不转义
-        let problem = Problem::new(400, "invalid_parameter", "路径/错误 \"引号\"\\反斜杠\n换行", vec![]);
+        let problem = Problem::new(
+            400,
+            "invalid_parameter",
+            "路径/错误 \"引号\"\\反斜杠\n换行",
+            vec![],
+        );
         let json = problem.to_json();
         assert!(
             json.contains(r#""title":"路径/错误 \"引号\"\\反斜杠\n换行""#),

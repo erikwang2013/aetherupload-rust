@@ -301,15 +301,39 @@ fn problem_responses_carry_the_2_0_shape() {
     let chunks: Vec<&[u8]> = content.chunks(7).collect();
     let total = chunks.len();
 
-    let response = send_chunk(&client, 1, total, &temp_base_name, &group_sub_dir, &hash, chunks[0]);
+    let response = send_chunk(
+        &client,
+        1,
+        total,
+        &temp_base_name,
+        &group_sub_dir,
+        &hash,
+        chunks[0],
+    );
     assert_eq!(response.status(), Status::Ok);
 
     // 跳号（跳过第 2 块直接发第 3 块）→ expected_index 指回缺口
-    let response = send_chunk(&client, 3, total, &temp_base_name, &group_sub_dir, &hash, chunks[2]);
+    let response = send_chunk(
+        &client,
+        3,
+        total,
+        &temp_base_name,
+        &group_sub_dir,
+        &hash,
+        chunks[2],
+    );
     assert_out_of_order(response, 2);
 
     // 重发已落块（第 1 块）→ 同样 409，expected_index 不变
-    let response = send_chunk(&client, 1, total, &temp_base_name, &group_sub_dir, &hash, chunks[0]);
+    let response = send_chunk(
+        &client,
+        1,
+        total,
+        &temp_base_name,
+        &group_sub_dir,
+        &hash,
+        chunks[0],
+    );
     assert_out_of_order(response, 2);
 
     // 补齐缺口后照常完成：拒绝没有破坏已落进度
@@ -404,7 +428,11 @@ fn assert_problem(response: LocalResponse<'_>, status: Status, code: &str) -> St
 
     let body = text(response.into_bytes().expect("问题响应应当有响应体"));
     assert_eq!(json_field(&body, "type"), "about:blank", "{body}");
-    assert_eq!(json_field(&body, "status"), status.code.to_string(), "{body}");
+    assert_eq!(
+        json_field(&body, "status"),
+        status.code.to_string(),
+        "{body}"
+    );
     assert_eq!(json_field(&body, "code"), code, "{body}");
     assert!(
         !json_field(&body, "title").is_empty(),

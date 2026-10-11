@@ -33,7 +33,8 @@
 use std::sync::Arc;
 
 use crate::controller::{
-    ResourceController, ResourceResponse, UploadController, save_chunk_ok_to_json, upload_ok_to_json,
+    ResourceController, ResourceResponse, UploadController, save_chunk_ok_to_json,
+    upload_ok_to_json,
 };
 use crate::form::FormData;
 use crate::json::Problem;
@@ -209,7 +210,8 @@ mod tests {
     use crate::config::Config;
 
     fn guard(tag: &str) -> (std::path::PathBuf, Guard) {
-        let base = std::env::temp_dir().join(format!("aetherupload-guard-{tag}-{}", std::process::id()));
+        let base =
+            std::env::temp_dir().join(format!("aetherupload-guard-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
 
         let runtime = Arc::new(Runtime::new(Config::default(), &base).unwrap());
@@ -240,11 +242,19 @@ mod tests {
         let (base, guard) = guard("routes");
         let routes = guard.routes();
 
-        assert_eq!(routes.classify("POST", "/aetherupload/preprocess"), Some(GuardRoute::Preprocess));
-        assert_eq!(routes.classify("POST", "/aetherupload/uploading"), Some(GuardRoute::Uploading));
+        assert_eq!(
+            routes.classify("POST", "/aetherupload/preprocess"),
+            Some(GuardRoute::Preprocess)
+        );
+        assert_eq!(
+            routes.classify("POST", "/aetherupload/uploading"),
+            Some(GuardRoute::Uploading)
+        );
         assert_eq!(
             routes.classify("GET", "/aetherupload/display/file_202610_abc.txt"),
-            Some(GuardRoute::Display { saved_path: "file_202610_abc.txt".into() })
+            Some(GuardRoute::Display {
+                saved_path: "file_202610_abc.txt".into()
+            })
         );
         assert_eq!(
             routes.classify("GET", "/aetherupload/download/file_202610_abc.txt/新名字"),
@@ -257,7 +267,9 @@ mod tests {
         // 查询串与 Fragment 不影响判定
         assert_eq!(
             routes.classify("GET", "/aetherupload/display/file_202610_abc.txt?x=1#y"),
-            Some(GuardRoute::Display { saved_path: "file_202610_abc.txt".into() })
+            Some(GuardRoute::Display {
+                saved_path: "file_202610_abc.txt".into()
+            })
         );
 
         // 方法不匹配 / 无关路径 → 交回宿主
@@ -268,7 +280,10 @@ mod tests {
         // 没有 new_name 的下载路径也算下载（内核用空串 → 400 invalid_parameter）
         assert_eq!(
             routes.classify("GET", "/aetherupload/download/file_202610_a.txt"),
-            Some(GuardRoute::Download { saved_path: "file_202610_a.txt".into(), new_name: String::new() })
+            Some(GuardRoute::Download {
+                saved_path: "file_202610_a.txt".into(),
+                new_name: String::new()
+            })
         );
 
         let _ = std::fs::remove_dir_all(&base);
@@ -285,8 +300,16 @@ mod tests {
 
         assert_eq!(response.status, 200);
         assert_eq!(response.content_type, "application/json; charset=utf-8");
-        assert!(response.body.contains(r#""chunk_size":1000000"#), "{}", response.body);
-        assert!(response.body.contains(r#""saved_path":""#), "{}", response.body);
+        assert!(
+            response.body.contains(r#""chunk_size":1000000"#),
+            "{}",
+            response.body
+        );
+        assert!(
+            response.body.contains(r#""saved_path":""#),
+            "{}",
+            response.body
+        );
 
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -300,8 +323,16 @@ mod tests {
 
         assert_eq!(response.status, 500);
         assert_eq!(response.content_type, "application/problem+json");
-        assert!(response.body.contains(r#""code":"internal_error""#), "{}", response.body);
-        assert!(response.body.contains(r#""title":"错误：服务器内部错误""#), "{}", response.body);
+        assert!(
+            response.body.contains(r#""code":"internal_error""#),
+            "{}",
+            response.body
+        );
+        assert!(
+            response.body.contains(r#""title":"错误：服务器内部错误""#),
+            "{}",
+            response.body
+        );
 
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -321,7 +352,10 @@ mod tests {
         assert_eq!(body.status, 400);
         assert!(body.body.contains(r#""code":"invalid_parameter""#));
 
-        assert_eq!(JsonBody::problem(&Problem::resource_not_found(None)).status, 404);
+        assert_eq!(
+            JsonBody::problem(&Problem::resource_not_found(None)).status,
+            404
+        );
     }
 
     #[test]

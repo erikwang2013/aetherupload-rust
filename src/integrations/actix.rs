@@ -161,8 +161,8 @@ async fn parse_multipart(
         return Err(ParseFailure::new(FormData::new(), false));
     };
 
-    let boundary = parse_boundary(content_type)
-        .map_err(|_| ParseFailure::new(FormData::new(), false))?;
+    let boundary =
+        parse_boundary(content_type).map_err(|_| ParseFailure::new(FormData::new(), false))?;
     let body = read_body(payload, limit).await?;
 
     // 用 `Multipart::new` 而不是 `with_reader`：后者要 multer 的 `tokio-io` feature

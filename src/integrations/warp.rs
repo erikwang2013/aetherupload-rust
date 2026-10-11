@@ -374,11 +374,7 @@ fn with_runtime(
 fn json_response((status, content_type, body): (u16, &'static str, String)) -> Response {
     let status = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let mut response = warp::reply::with_status(body, status).into_response();
-    set_header(
-        response.headers_mut(),
-        header::CONTENT_TYPE,
-        content_type,
-    );
+    set_header(response.headers_mut(), header::CONTENT_TYPE, content_type);
 
     response
 }

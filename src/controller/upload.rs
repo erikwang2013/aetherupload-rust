@@ -122,10 +122,15 @@ impl UploadController {
     }
 
     /// 预处理：校验参数与分组 → 生成临时名 → 判定秒传 → 建 `.part` 与断点文件。
-    pub fn preprocess(&self, request: &PreprocessRequest) -> std::result::Result<PreprocessOk, Problem> {
+    pub fn preprocess(
+        &self,
+        request: &PreprocessRequest,
+    ) -> std::result::Result<PreprocessOk, Problem> {
         let locale = request.locale.as_deref();
         let (Some(resource_name), Some(resource_size), Some(group)) = (
-            request.resource_name.as_deref(), request.resource_size.as_deref(), request.group.as_deref()
+            request.resource_name.as_deref(),
+            request.resource_size.as_deref(),
+            request.group.as_deref(),
         ) else {
             return Err(bad_parameter(locale));
         };
@@ -137,7 +142,13 @@ impl UploadController {
 
         let mut partial: Option<PartialResource> = None;
 
-        match self.run_preprocess(resource_name, resource_size, group, request.resource_hash.as_deref(), &mut partial) {
+        match self.run_preprocess(
+            resource_name,
+            resource_size,
+            group,
+            request.resource_hash.as_deref(),
+            &mut partial,
+        ) {
             Ok(ok) => Ok(ok),
             Err(err) => {
                 // 整份作废：参数/分组/类型/大小/内部故障都把临时文件与断点一起清
@@ -150,11 +161,19 @@ impl UploadController {
     }
 
     fn run_preprocess(
-        &self, resource_name: &str, resource_size: u64, group: &str, resource_hash: Option<&str>,
+        &self,
+        resource_name: &str,
+        resource_size: u64,
+        group: &str,
+        resource_hash: Option<&str>,
         partial_slot: &mut Option<PartialResource>,
     ) -> Result<PreprocessOk> {
         // 分组解析（含「含下划线一律拒」）：未配置/名字非法都是分组问题，不是内部故障
-        let snapshot = self.runtime.config().resolve_group(group).map_err(|_| Error::InvalidGroup)?;
+        let snapshot = self
+            .runtime
+            .config()
+            .resolve_group(group)
+            .map_err(|_| Error::InvalidGroup)?;
 
         let temp_base_name = util::generate_temp_name();
         let resource_ext = util::extension_of(resource_name);
@@ -171,7 +190,11 @@ impl UploadController {
 
         // 构造即入槽：之后任何 `?` 都由调用方清干净（连 `.part` 与断点一起清）
         *partial_slot = Some(PartialResource::new(
-            self.runtime.upload_root(), &snapshot, &temp_base_name, &resource_ext, &group_sub_dir,
+            self.runtime.upload_root(),
+            &snapshot,
+            &temp_base_name,
+            &resource_ext,
+            &group_sub_dir,
         ));
         let partial = partial_slot.as_ref().expect("刚刚放入");
         partial.filter_by_extension(&resource_ext)?;
@@ -179,7 +202,10 @@ impl UploadController {
         // hash 是客户端可控值：非空时必须是 32 位十六进制（`lax_mode` 下不校验；空串＝
         // 客户端不提供 hash，保持既有「跳过比对」语义，不算错）
         let resource_hash = resource_hash.filter(|hash| !hash.is_empty());
-        if let Some(hash) = resource_hash && !snapshot.lax_mode && !is_md5_hex(hash) {
+        if let Some(hash) = resource_hash
+            && !snapshot.lax_mode
+            && !is_md5_hex(hash)
+        {
             return Err(Error::InvalidResourceParams);
         }
 
@@ -193,7 +219,8 @@ impl UploadController {
 
         // 秒传判定：命中即返回既有路径，一个分块都不用传
         if snapshot.instant_completion
-            && let Some(saved_path) = resource_hash.and_then(|hash| self.instant_lookup(group, hash))
+            && let Some(saved_path) =
+                resource_hash.and_then(|hash| self.instant_lookup(group, hash))
         {
             ok.saved_path = saved_path;
             return Ok(ok);
@@ -206,12 +233,27 @@ impl UploadController {
     }
 
     /// 分块写入：校验 → 追加 → 回写断点；末块走完整校验并落盘。
-    pub fn save_chunk(&self, request: &SaveChunkRequest) -> std::result::Result<SaveChunkOk, Problem> {
+    pub fn save_chunk(
+        &self,
+        request: &SaveChunkRequest,
+    ) -> std::result::Result<SaveChunkOk, Problem> {
         let locale = request.locale.as_deref();
-        let (Some(chunk_total), Some(chunk_index), Some(temp_base_name), Some(resource_ext), Some(group_subdir), Some(group)) = (
-            request.chunk_total.as_deref(), request.chunk_index.as_deref(), request.resource_temp_basename.as_deref(),
-            request.resource_ext.as_deref(), request.group_subdir.as_deref(), request.group.as_deref(),
-        ) else {
+        let (
+            Some(chunk_total),
+            Some(chunk_index),
+            Some(temp_base_name),
+            Some(resource_ext),
+            Some(group_subdir),
+            Some(group),
+        ) = (
+            request.chunk_total.as_deref(),
+            request.chunk_index.as_deref(),
+            request.resource_temp_basename.as_deref(),
+            request.resource_ext.as_deref(),
+            request.group_subdir.as_deref(),
+            request.group.as_deref(),
+        )
+        else {
             return Err(bad_parameter(locale));
         };
 
@@ -226,17 +268,32 @@ impl UploadController {
             return Err(bad_parameter(locale));
         }
         // 分块序号：纯数字、≥1、总数有上限、序号不超过总数
-        let (Some(chunk_index), Some(chunk_total)) = (parse_positive(chunk_index), parse_positive(chunk_total)) else {
+        let (Some(chunk_index), Some(chunk_total)) =
+            (parse_positive(chunk_index), parse_positive(chunk_total))
+        else {
             return Err(bad_parameter(locale));
         };
         if chunk_total > MAX_CHUNK_TOTAL || chunk_index > chunk_total {
             return Err(bad_parameter(locale));
         }
 
-        let params = ChunkParams { chunk_index, chunk_total, temp_base_name, resource_ext, group_subdir, group };
+        let params = ChunkParams {
+            chunk_index,
+            chunk_total,
+            temp_base_name,
+            resource_ext,
+            group_subdir,
+            group,
+        };
         let mut partial_slot: Option<PartialResource> = None;
 
-        match self.run_save_chunk(&params, request.resource_hash.as_deref(), request.chunk.as_ref(), locale, &mut partial_slot) {
+        match self.run_save_chunk(
+            &params,
+            request.resource_hash.as_deref(),
+            request.chunk.as_ref(),
+            locale,
+            &mut partial_slot,
+        ) {
             Ok(ChunkFlow::Accepted(ok)) => Ok(ok),
             // 可恢复的失败：报问题响应但**保留**进度（客户端可按 `code` 重传或推进）
             Ok(ChunkFlow::Recoverable(problem)) => Err(problem),
@@ -251,11 +308,26 @@ impl UploadController {
     }
 
     fn run_save_chunk(
-        &self, params: &ChunkParams<'_>, resource_hash: Option<&str>, chunk: Option<&ChunkBody>,
-        locale: Option<&str>, partial_slot: &mut Option<PartialResource>,
+        &self,
+        params: &ChunkParams<'_>,
+        resource_hash: Option<&str>,
+        chunk: Option<&ChunkBody>,
+        locale: Option<&str>,
+        partial_slot: &mut Option<PartialResource>,
     ) -> Result<ChunkFlow> {
-        let ChunkParams { chunk_index, chunk_total, temp_base_name, resource_ext, group_subdir, group } = *params;
-        let snapshot = self.runtime.config().resolve_group(group).map_err(|_| Error::InvalidGroup)?;
+        let ChunkParams {
+            chunk_index,
+            chunk_total,
+            temp_base_name,
+            resource_ext,
+            group_subdir,
+            group,
+        } = *params;
+        let snapshot = self
+            .runtime
+            .config()
+            .resolve_group(group)
+            .map_err(|_| Error::InvalidGroup)?;
 
         // 事件开关与白名单在本请求内快照（中途改配置不影响这一次上传）
         let event_before = snapshot.event_before_upload_complete;
@@ -265,25 +337,34 @@ impl UploadController {
 
         // hash 是客户端可控值：非空时必须是 32 位十六进制（`lax_mode` 下不校验）
         let resource_hash = resource_hash.filter(|hash| !hash.is_empty());
-        if let Some(hash) = resource_hash && !lax_mode && !is_md5_hex(hash) {
+        if let Some(hash) = resource_hash
+            && !lax_mode
+            && !is_md5_hex(hash)
+        {
             return Err(Error::InvalidResourceParams);
         }
 
         *partial_slot = Some(PartialResource::new(
-            self.runtime.upload_root(), &snapshot, temp_base_name, resource_ext, group_subdir,
+            self.runtime.upload_root(),
+            &snapshot,
+            temp_base_name,
+            resource_ext,
+            group_subdir,
         ));
         let partial = partial_slot.as_ref().expect("刚刚放入");
 
         // resource_ext 来自客户端：与预处理同样要过一遍扩展名过滤
         partial.filter_by_extension(resource_ext)?;
         // 白名单为空时，黑名单可能被使用者清空 —— 可执行扩展名再硬拒一层
-        if snapshot.resource_extensions.is_empty() && EXECUTABLE_EXTENSIONS.contains(&resource_ext) {
+        if snapshot.resource_extensions.is_empty() && EXECUTABLE_EXTENSIONS.contains(&resource_ext)
+        {
             return Err(Error::InvalidResourceType);
         }
 
         // 秒传判定放在存在性检查之前：完成后再重发末块是幂等的
         if instant_completion
-            && let Some(saved_path) = resource_hash.and_then(|hash| self.instant_lookup(group, hash))
+            && let Some(saved_path) =
+                resource_hash.and_then(|hash| self.instant_lookup(group, hash))
         {
             if partial.exists() {
                 partial.cleanup();
@@ -322,7 +403,10 @@ impl UploadController {
         let expected_index = last_chunk_index.saturating_add(1);
         if chunk_index != expected_index {
             return Ok(ChunkFlow::Recoverable(Problem::localized(
-                409, "chunk_out_of_order", locale, vec![("expected_index", expected_index.to_string())],
+                409,
+                "chunk_out_of_order",
+                locale,
+                vec![("expected_index", expected_index.to_string())],
             )));
         }
 
@@ -343,13 +427,19 @@ impl UploadController {
         guard.write_index(chunk_index)?;
 
         if chunk_index != chunk_total {
-            return Ok(ChunkFlow::Accepted(SaveChunkOk { saved_path: String::new() }));
+            return Ok(ChunkFlow::Accepted(SaveChunkOk {
+                saved_path: String::new(),
+            }));
         }
 
         // —— 末块：大小上限 → 真实 MIME → 整份 md5 ——
         // 真实大小为 0 不单独报错：非 lax 时下面的 md5 比对会以 422 拒掉；`lax_mode`
         // 下接受（lax 的代价，见文档）。
-        let real_size = partial.path.metadata().map_err(|_| Error::UploadError)?.len();
+        let real_size = partial
+            .path
+            .metadata()
+            .map_err(|_| Error::UploadError)?
+            .len();
         if partial.max_size != 0 && real_size > partial.max_size {
             return Err(Error::InvalidResourceSize);
         }
@@ -383,7 +473,11 @@ impl UploadController {
 
         if event_complete {
             let resource = Resource::new(
-                self.runtime.upload_root(), group, &partial.group_dir, group_subdir, &complete_name,
+                self.runtime.upload_root(),
+                group,
+                &partial.group_dir,
+                group_subdir,
+                &complete_name,
             );
             emit_safely(|| self.runtime.events().upload_complete(&resource));
         }
@@ -396,7 +490,12 @@ impl UploadController {
     fn instant_lookup(&self, group: &str, hash: &str) -> Option<String> {
         let key = InstantIndex::key(group, hash).ok()?;
 
-        self.runtime.instant_index().get(&key).ok().flatten().filter(|saved_path| !saved_path.is_empty())
+        self.runtime
+            .instant_index()
+            .get(&key)
+            .ok()
+            .flatten()
+            .filter(|saved_path| !saved_path.is_empty())
     }
 }
 

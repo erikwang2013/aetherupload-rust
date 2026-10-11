@@ -343,7 +343,9 @@ fn display_and_download_serve_the_file() {
         "file_202610_..%2f..%2fetc",
     ] {
         match harness.resources().display(bad) {
-            ResourceResponse::Problem(problem) => assert_problem(&problem, 400, "invalid_parameter"),
+            ResourceResponse::Problem(problem) => {
+                assert_problem(&problem, 400, "invalid_parameter")
+            }
             other => panic!(
                 "saved_path 解码失败应报参数错误（{bad}），实际状态 {}",
                 other.status()
@@ -355,17 +357,16 @@ fn display_and_download_serve_the_file() {
     for bad in ["nope_202610_deadbeef.jpg", "a_b_c_d"] {
         match harness.resources().display(bad) {
             ResourceResponse::Problem(problem) => assert_problem(&problem, 400, "invalid_group"),
-            other => panic!(
-                "未知分组应报分组错误（{bad}），实际状态 {}",
-                other.status()
-            ),
+            other => panic!("未知分组应报分组错误（{bad}），实际状态 {}", other.status()),
         }
     }
 
     // download 的 new_name 非法（空串 / 含分隔符 / 含控制字符）→ 400 invalid_parameter
     for bad in ["", "a/b", "a\\b", "换\n行"] {
         match harness.resources().download(&saved_path, bad) {
-            ResourceResponse::Problem(problem) => assert_problem(&problem, 400, "invalid_parameter"),
+            ResourceResponse::Problem(problem) => {
+                assert_problem(&problem, 400, "invalid_parameter")
+            }
             other => panic!(
                 "new_name 非法应报参数错误（{bad:?}），实际状态 {}",
                 other.status()
@@ -587,7 +588,11 @@ fn unprepared_uploads_are_409_and_never_destroy_the_data() {
     //    连数据一起清掉（可恢复状态被销毁），2.0 的硬要求是原样保留
     let pre = harness.preprocess_ok("headerless.txt", &content, "file");
     let (part_ok, header_ok) = harness.progress(&pre);
-    assert_eq!((part_ok, header_ok), (true, true), "预处理应建好 .part 与断点");
+    assert_eq!(
+        (part_ok, header_ok),
+        (true, true),
+        "预处理应建好 .part 与断点"
+    );
 
     let header = harness
         .upload_root()
@@ -749,23 +754,46 @@ fn preprocess_parameter_problems_are_coded() {
     assert_problem(&problem, 400, "invalid_parameter");
 
     // 分组名含下划线：会破坏 saved_path 三段式解码 → 400 invalid_group
-    let problem = expect_problem(preprocess(Some("a.txt"), Some("10"), Some("my_file"), None, "zh"));
+    let problem = expect_problem(preprocess(
+        Some("a.txt"),
+        Some("10"),
+        Some("my_file"),
+        None,
+        "zh",
+    ));
     assert_problem(&problem, 400, "invalid_group");
 
     // 未配置的分组 → 400 invalid_group
-    let problem = expect_problem(preprocess(Some("a.txt"), Some("10"), Some("nope"), None, "zh"));
+    let problem = expect_problem(preprocess(
+        Some("a.txt"),
+        Some("10"),
+        Some("nope"),
+        None,
+        "zh",
+    ));
     assert_problem(&problem, 400, "invalid_group");
 
     // 声明大小超分组上限 / 为 0 / 非严格数字 → 400 invalid_parameter
     //（「5.5」「1e3」1.x 会静默截断，2.0 从严）
     for size in ["999999999999", "0", "5.5", "1e3", "abc", ""] {
-        let problem =
-            expect_problem(preprocess(Some("a.txt"), Some(size), Some("file"), None, "zh"));
+        let problem = expect_problem(preprocess(
+            Some("a.txt"),
+            Some(size),
+            Some("file"),
+            None,
+            "zh",
+        ));
         assert_problem(&problem, 400, "invalid_parameter");
     }
 
     // 派生出的扩展名落在黑名单（.php 在默认黑名单里）→ 415 unsupported_media_type
-    let problem = expect_problem(preprocess(Some("shell.php"), Some("10"), Some("file"), None, "zh"));
+    let problem = expect_problem(preprocess(
+        Some("shell.php"),
+        Some("10"),
+        Some("file"),
+        None,
+        "zh",
+    ));
     assert_problem(&problem, 415, "unsupported_media_type");
 
     // 派生出的扩展名自身不安全（非安全字符集 / 超长）→ 400 invalid_parameter。
@@ -777,14 +805,24 @@ fn preprocess_parameter_problems_are_coded() {
         format!("报告.{long_ext}"),
         "报告.a b".to_string(),
     ] {
-        let problem =
-            expect_problem(preprocess(Some(&name), Some("10"), Some("file"), None, "zh"));
+        let problem = expect_problem(preprocess(
+            Some(&name),
+            Some("10"),
+            Some("file"),
+            None,
+            "zh",
+        ));
         assert_problem(&problem, 400, "invalid_parameter");
     }
 
     // hash 非空但不是 32 位 hex → 400 invalid_parameter（空串＝客户端不提供，走跳过比对）
-    let problem =
-        expect_problem(preprocess(Some("a.txt"), Some("10"), Some("file"), Some("abc"), "zh"));
+    let problem = expect_problem(preprocess(
+        Some("a.txt"),
+        Some("10"),
+        Some("file"),
+        Some("abc"),
+        "zh",
+    ));
     assert_problem(&problem, 400, "invalid_parameter");
 
     // 正向防回归：正常中文与空格的文件名必须通过（安全检查只针对派生扩展名）
@@ -794,8 +832,20 @@ fn preprocess_parameter_problems_are_coded() {
     );
 
     // title 走请求里的 locale：同一个失败在 zh / en 下必须给出不同文案
-    let zh = expect_problem(preprocess(Some("a.txt"), Some("10"), Some("nope"), None, "zh"));
-    let en = expect_problem(preprocess(Some("a.txt"), Some("10"), Some("nope"), None, "en"));
+    let zh = expect_problem(preprocess(
+        Some("a.txt"),
+        Some("10"),
+        Some("nope"),
+        None,
+        "zh",
+    ));
+    let en = expect_problem(preprocess(
+        Some("a.txt"),
+        Some("10"),
+        Some("nope"),
+        None,
+        "en",
+    ));
     assert_ne!(zh.title, en.title, "title 应按 locale 本地化");
     assert!(zh.title.contains("错误"), "中文文案：{}", zh.title);
     assert!(en.title.contains("Error"), "英文文案：{}", en.title);
@@ -927,14 +977,7 @@ fn a_single_chunk_larger_than_chunk_size_is_413() {
     assert!(
         harness
             .uploader()
-            .save_chunk(&harness.chunk_request(
-                &pre,
-                "file",
-                1,
-                2,
-                &hash,
-                Some(vec![b'y'; 64]),
-            ))
+            .save_chunk(&harness.chunk_request(&pre, "file", 1, 2, &hash, Some(vec![b'y'; 64]),))
             .is_ok(),
         "恰好等于 chunk_size 的块必须被接受"
     );

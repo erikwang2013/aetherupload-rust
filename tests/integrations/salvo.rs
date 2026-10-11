@@ -372,7 +372,11 @@ async fn problem_responses_carry_the_2_0_shape() {
     }
 
     // 不存在的资源 → 404 resource_not_found（problem+json，不再是纯文本）
-    let response = get(&router, &format!("{ORIGIN}{display_path}/file_202610_missing.txt")).await;
+    let response = get(
+        &router,
+        &format!("{ORIGIN}{display_path}/file_202610_missing.txt"),
+    )
+    .await;
     assert_problem(response, StatusCode::NOT_FOUND, "resource_not_found").await;
 
     // 两种编码都不认的 content-type：适配层自己的解析失败 → 400 invalid_request_body

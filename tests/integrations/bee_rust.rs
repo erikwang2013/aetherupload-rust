@@ -166,7 +166,10 @@ async fn assert_problem(
         "{body}"
     );
     assert_eq!(json_field(&body, "code"), code, "{body}");
-    assert!(!json_field(&body, "title").is_empty(), "title 必须非空：{body}");
+    assert!(
+        !json_field(&body, "title").is_empty(),
+        "title 必须非空：{body}"
+    );
 
     body
 }
@@ -455,10 +458,7 @@ async fn problem_responses_carry_the_2_0_shape() {
         assert_eq!(status, StatusCode::OK, "第 {index} 块: {body}");
 
         if index == total {
-            assert!(
-                !json_field(&body, "saved_path").is_empty(),
-                "{body}"
-            );
+            assert!(!json_field(&body, "saved_path").is_empty(), "{body}");
         }
     }
 

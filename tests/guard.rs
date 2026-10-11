@@ -250,7 +250,9 @@ fn native_rust_full_flow() {
 
         if index + 1 == total {
             assert!(
-                !json_value(&last_body, "saved_path").unwrap_or("").is_empty(),
+                !json_value(&last_body, "saved_path")
+                    .unwrap_or("")
+                    .is_empty(),
                 "末块必须给出 saved_path：{last_body}"
             );
         } else {

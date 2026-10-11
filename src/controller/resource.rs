@@ -76,11 +76,17 @@ impl ResourceResponse {
                 headers.push(("Location".to_string(), location.clone()));
                 headers
             }
-            Self::AccelRedirect { internal_path, download_name } => {
+            Self::AccelRedirect {
+                internal_path,
+                download_name,
+            } => {
                 let mut headers = nosniff();
                 headers.push(("X-Accel-Redirect".to_string(), internal_path.clone()));
                 if let Some(name) = download_name {
-                    headers.push(("Content-Disposition".to_string(), attachment_disposition(name)));
+                    headers.push((
+                        "Content-Disposition".to_string(),
+                        attachment_disposition(name),
+                    ));
                 }
                 headers
             }
@@ -156,7 +162,12 @@ impl ResourceController {
     }
 
     /// 三条成功路径的选择：s3 → 加速重定向 → 本地文件。
-    fn respond(&self, resource: &Resource, inline_blocked: bool, response_params: Vec<(String, String)>) -> ResourceResponse {
+    fn respond(
+        &self,
+        resource: &Resource,
+        inline_blocked: bool,
+        response_params: Vec<(String, String)>,
+    ) -> ResourceResponse {
         // 存储驱动的签名/寻址失败是内部故障（500），不是「文件不存在」
         let url = match resource.url(self.runtime.storage(), &response_params) {
             Ok(url) => url,
@@ -170,7 +181,8 @@ impl ResourceController {
         if self.runtime.config().x_accel_redirect {
             // 只由服务端已校验的数据拼出；前缀与宿主 nginx 的 alias 对齐
             let internal_path = format!(
-                "{}{}/{}/{}", ACCEL_PREFIX, resource.group_dir, resource.group_sub_dir, resource.name
+                "{}{}/{}/{}",
+                ACCEL_PREFIX, resource.group_dir, resource.group_sub_dir, resource.name
             );
 
             return ResourceResponse::AccelRedirect {
@@ -189,9 +201,11 @@ impl ResourceController {
     /// 存储驱动故障 → 500。
     fn locate(&self, uri: &str) -> std::result::Result<Resource, Problem> {
         let params = SavedPath::decode(uri).map_err(|_| bad_parameter())?;
-        let snapshot = self.runtime.config().resolve_group(&params.group).map_err(|_| {
-            Problem::localized(400, "invalid_group", None, Vec::new())
-        })?;
+        let snapshot = self
+            .runtime
+            .config()
+            .resolve_group(&params.group)
+            .map_err(|_| Problem::localized(400, "invalid_group", None, Vec::new()))?;
 
         let resource = Resource::new(
             self.runtime.upload_root(),
@@ -221,7 +235,10 @@ fn internal_error() -> Problem {
 
 /// 下载名合法性：空串、含 `/` `\` 或控制字符 → 非法。
 fn is_valid_new_name(name: &str) -> bool {
-    !name.is_empty() && !name.chars().any(|c| c == '/' || c == '\\' || c.is_control())
+    !name.is_empty()
+        && !name
+            .chars()
+            .any(|c| c == '/' || c == '\\' || c.is_control())
 }
 
 fn is_inline_blocked(name: &str) -> bool {
@@ -277,7 +294,8 @@ mod tests {
     use crate::error::Error;
 
     fn runtime(tag: &str) -> (PathBuf, Arc<Runtime>) {
-        let root = std::env::temp_dir().join(format!("aetherupload-resctl-{tag}-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("aetherupload-resctl-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
 
         // 成品落在 upload_root（= base_path/root_dir）下
@@ -286,7 +304,10 @@ mod tests {
         std::fs::write(group_dir.join("abc.jpg"), b"jpeg-bytes").unwrap();
         std::fs::write(group_dir.join("evil.svg"), b"<svg/>").unwrap();
 
-        (root.clone(), Arc::new(Runtime::new(Config::default(), &root).unwrap()))
+        (
+            root.clone(),
+            Arc::new(Runtime::new(Config::default(), &root).unwrap()),
+        )
     }
 
     fn problem_of(response: ResourceResponse) -> Problem {
@@ -304,7 +325,11 @@ mod tests {
         let response = controller.display("file_202610_abc.jpg");
         assert_eq!(response.status(), 200);
         assert!(matches!(response, ResourceResponse::ServeFile { .. }));
-        assert!(response.headers().contains(&("X-Content-Type-Options".to_string(), "nosniff".to_string())));
+        assert!(
+            response
+                .headers()
+                .contains(&("X-Content-Type-Options".to_string(), "nosniff".to_string()))
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -329,12 +354,22 @@ mod tests {
     fn accel_redirect_mode_returns_internal_path() {
         let (root, _) = runtime("accel");
         let runtime = Arc::new(
-            Runtime::new(Config { x_accel_redirect: true, ..Config::default() }, &root).unwrap(),
+            Runtime::new(
+                Config {
+                    x_accel_redirect: true,
+                    ..Config::default()
+                },
+                &root,
+            )
+            .unwrap(),
         );
         let controller = ResourceController::new(runtime);
 
         match controller.display("file_202610_abc.jpg") {
-            ResourceResponse::AccelRedirect { internal_path, download_name } => {
+            ResourceResponse::AccelRedirect {
+                internal_path,
+                download_name,
+            } => {
                 assert_eq!(internal_path, "/internal-aetherupload/file/202610/abc.jpg");
                 assert!(download_name.is_none());
             }
@@ -343,9 +378,11 @@ mod tests {
 
         // 被拉黑类型带上附件头
         let headers = controller.display("file_202610_evil.svg").headers();
-        assert!(headers
-            .iter()
-            .any(|(key, value)| key == "Content-Disposition" && value.starts_with("attachment;")));
+        assert!(
+            headers.iter().any(
+                |(key, value)| key == "Content-Disposition" && value.starts_with("attachment;")
+            )
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -375,7 +412,11 @@ mod tests {
 
         for bad in ["", "a/b", "a\\b", "a\nb"] {
             let problem = problem_of(controller.download("file_202610_abc.jpg", bad));
-            assert_eq!((problem.status(), problem.code), (400, "invalid_parameter"), "new_name={bad:?}");
+            assert_eq!(
+                (problem.status(), problem.code),
+                (400, "invalid_parameter"),
+                "new_name={bad:?}"
+            );
         }
 
         let _ = std::fs::remove_dir_all(&root);
@@ -393,7 +434,11 @@ mod tests {
         let problem = problem_of(response);
         assert_eq!(problem.code, "resource_not_found");
         assert_eq!(problem.content_type(), "application/problem+json");
-        assert!(problem.to_json().contains(r#""title":"Error: resource not found""#));
+        assert!(
+            problem
+                .to_json()
+                .contains(r#""title":"Error: resource not found""#)
+        );
 
         let problem = problem_of(controller.display("bad_path"));
         assert_eq!((problem.status(), problem.code), (400, "invalid_parameter"));
@@ -408,7 +453,13 @@ mod tests {
     struct FailingStorage;
 
     impl crate::storage::Storage for FailingStorage {
-        fn publish(&self, _: &std::path::Path, _: &str, _: &str, _: &str) -> crate::error::Result<()> {
+        fn publish(
+            &self,
+            _: &std::path::Path,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> crate::error::Result<()> {
             Err(Error::RenameResourceFail)
         }
         fn exists(&self, _: &str, _: &str, _: &str) -> crate::error::Result<bool> {
@@ -417,7 +468,13 @@ mod tests {
         fn delete(&self, _: &str, _: &str, _: &str) -> crate::error::Result<()> {
             Err(Error::DeleteResourceFail)
         }
-        fn url(&self, _: &str, _: &str, _: &str, _: &[(String, String)]) -> crate::error::Result<Option<String>> {
+        fn url(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &[(String, String)],
+        ) -> crate::error::Result<Option<String>> {
             Err(Error::Io(std::io::Error::other("sign fail")))
         }
     }
