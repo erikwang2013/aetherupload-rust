@@ -1,16 +1,74 @@
 // Copyright (c) 2026 erik <erik@erik.xyz> — https://erik.xyz
 
-//! 消息目录 —— 对应 PHP 版 `translations/{zh,en}/messages.php`。
+//! 消息目录 —— 问题响应的 `title` 与内部错误的日志文案都在这里查表。
 //!
-//! 文案逐条照搬（含「错误：/ Error: 」前缀），因为前端会把这些字符串原样显示给用户，
-//! 而返回给客户端的 `error` 字段就是这里的译文。语种由请求参数 `locale` 决定
-//! （PHP 版由适配器把 locale 透传给框架翻译器，未命中回落 `en`）。
+//! 键分两类：
+//!
+//! - **2.0 的 code**（`invalid_parameter`、`chunk_out_of_order` 等）—— 就是 §4 表里的
+//!   机器码，[`crate::json::Problem::localized`] 拿它当 `title` 的查表键，每个 code 在
+//!   zh/en 各有一条人类可读消息；
+//! - **1.x 遗留的错误键**（`create_header_fail` 等）—— 只给日志与 `Display` 用，
+//!   不再进响应体；保留是为了日志仍然能区分「创建断点失败」和「写断点失败」。
+//!
+//! 语种由请求参数 `locale` 决定（缺省 `en`），查不到的实现未命中回落 `en`。
 
-/// 默认语种（与 PHP 版 `$locale = Runtime::request()->input('locale', 'en')` 一致）。
+/// 默认语种（请求没带 `locale` 时用它）。
 pub const DEFAULT_LOCALE: &str = "en";
 
-/// key → (zh, en)。键与 PHP 版翻译文件的键一一对应。
+/// code / key → (zh, en)。
 pub const MESSAGES: &[(&str, &str, &str)] = &[
+    // —— 2.0 问题响应的 code ——
+    (
+        "invalid_parameter",
+        "错误：请求参数非法",
+        "Error: invalid request parameter",
+    ),
+    (
+        "invalid_request_body",
+        "错误：请求体无法解析",
+        "Error: request body cannot be parsed",
+    ),
+    (
+        "invalid_group",
+        "错误：无效的上传分组",
+        "Error: invalid upload group",
+    ),
+    (
+        "upload_not_prepared",
+        "错误：上传未预处理或临时资源已失效",
+        "Error: upload not prepared or temporary resource is gone",
+    ),
+    (
+        "chunk_out_of_order",
+        "错误：分块序号不连续",
+        "Error: chunk index out of order",
+    ),
+    (
+        "payload_too_large",
+        "错误：上传数据超过大小限制",
+        "Error: payload exceeds the size limit",
+    ),
+    (
+        "hash_mismatch",
+        "错误：文件完整性校验不通过",
+        "Error: file integrity check failed",
+    ),
+    (
+        "unsupported_media_type",
+        "错误：不支持的媒体类型",
+        "Error: unsupported media type",
+    ),
+    (
+        "internal_error",
+        "错误：服务器内部错误",
+        "Error: internal server error",
+    ),
+    (
+        "resource_not_found",
+        "错误：资源不存在",
+        "Error: resource not found",
+    ),
+    // —— 1.x 遗留键：只进日志 ——
     (
         "upload_error",
         "错误: 上传发生错误",
@@ -98,8 +156,7 @@ pub const MESSAGES: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// 语种归一：`zh` / `zh-CN` / `zh_TW` 都算中文，其余一律回落英文
-/// （PHP 版把 locale 交给框架翻译器，查不到就回落到默认语种）。
+/// 语种归一：`zh` / `zh-CN` / `zh_TW` 都算中文，其余一律回落英文。
 pub fn normalize_locale(locale: &str) -> &'static str {
     let head = locale
         .trim()
@@ -111,7 +168,7 @@ pub fn normalize_locale(locale: &str) -> &'static str {
     if head == "zh" { "zh" } else { "en" }
 }
 
-/// 查表取译文；未知 key 原样返回（与 PHP 翻译器的「找不到返回 key」行为一致）。
+/// 查表取译文；未知 key 原样返回（借用入参的生命周期，未知键也能原样传出）。
 pub fn translate<'a>(key: &'a str, locale: &str) -> &'a str {
     let zh = normalize_locale(locale) == "zh";
 
@@ -129,7 +186,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wording_matches_the_php_catalog() {
+    fn wording_is_frozen() {
         assert_eq!(translate("upload_error", "zh"), "错误: 上传发生错误");
         assert_eq!(
             translate("upload_error", "en"),
@@ -140,6 +197,30 @@ mod tests {
             translate("missing_mimetype", "en-US"),
             "Error: missing mime-type mapping"
         );
+    }
+
+    /// §4 表的每个 code 都有两条人类可读消息（问题响应的 title 就取它）。
+    #[test]
+    fn every_problem_code_has_a_message() {
+        for code in [
+            "invalid_parameter",
+            "invalid_request_body",
+            "invalid_group",
+            "upload_not_prepared",
+            "chunk_out_of_order",
+            "payload_too_large",
+            "hash_mismatch",
+            "unsupported_media_type",
+            "internal_error",
+            "resource_not_found",
+        ] {
+            let zh = translate(code, "zh");
+            let en = translate(code, "en");
+            assert_ne!(zh, code, "zh 缺少 {code}");
+            assert_ne!(en, code, "en 缺少 {code}");
+            assert!(zh.starts_with("错误："), "{code} 的 zh 消息格式不对");
+            assert!(en.starts_with("Error: "), "{code} 的 en 消息格式不对");
+        }
     }
 
     #[test]
@@ -157,7 +238,7 @@ mod tests {
         assert_eq!(translate("no_such_key", "zh"), "no_such_key");
     }
 
-    /// 目录与 PHP 翻译文件逐键对账：16 个键一个都不能少。
+    /// 目录与 1.x 翻译文件逐键对账：遗留键一个都不能少（日志还在用）。
     #[test]
     fn catalog_is_complete() {
         let keys: Vec<&str> = MESSAGES.iter().map(|(key, _, _)| *key).collect();

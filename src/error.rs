@@ -1,29 +1,34 @@
 // Copyright (c) 2026 erik <erik@erik.xyz> — https://erik.xyz
 
-//! 内核错误 —— 对应 PHP 版 `UploadController::KNOWN_ERROR_MESSAGES` 的白名单语义。
+//! 内核错误与「错误 → 问题响应」的映射 —— 状态码 × code 表的唯一出处。
 //!
-//! PHP 版把异常消息与已知错误键比对，**不在白名单里的一律对客户端报 `upload_error`**
-//! （不泄漏内部异常细节）。Rust 版用枚举把「已知错误」变成类型：每个变体就是一条对外的
-//! 错误键，而 [`Error::Backend`] / [`Error::Io`] 这类内部故障统一翻译成 `upload_error`
-//! —— 与 PHP 的兜底行为一致。
+//! 1.x 把已知异常统一折叠成一个模糊文案；2.0 起每个变体对应一个**稳定的机器码**，
+//! 语义唯一的变体直接在 [`Error::outcome`] 里给出 `(状态码, code)`。
 //!
-//! 面向客户端的文案由 [`Error::localized`] 按请求语种渲染；`Display` 固定用中文，
+//! 一码多义的变体（例如 [`Error::InvalidOperation`] 能表示分组非法、`savedPath` 解码
+//! 失败、临时资源缺失、hash 格式非法四种语义）`outcome()` 返回 `None`，**逼调用点按
+//! 语义拆开**：要么换成语义唯一的变体，要么直接构造对应的 [`Problem`] —— 不许在映射
+//! 层用一个 code 糊过去。真漏了映射也只给 500 `internal_error`，绝不猜成 4xx。
+//!
+//! 面向客户端的文案由 [`Problem::localized`] 按请求语种渲染；`Display` 固定中文，
 //! 供日志与 `?` 传播时阅读。
 
 use std::fmt;
 
 use crate::i18n;
+use crate::json::Problem;
 
-/// 已知错误键（与 PHP 白名单同名）。
-///
-/// 不派生 `Clone` / `PartialEq`：变体里带着 `std::io::Error` 与后端消息字符串。
-/// 需要比较种类时用 [`Error::key`]。
+/// 内核错误。变体名沿用 1.x 的白名单键，语义唯一的那些与 §4 的 code 一一对应。
 #[derive(Debug)]
 pub enum Error {
     InvalidResourceParams,
     InvalidResourceSize,
     InvalidResourceType,
     MissingMimetype,
+    /// 分组未配置或名字含下划线 —— preprocess 与 display/download 共用同一判定
+    InvalidGroup,
+    /// 末块整份 md5 与客户端声明不符（`lax_mode = false`）
+    HashMismatch,
     InvalidOperation,
     UploadError,
     CreateSubfolderFail,
@@ -35,20 +40,47 @@ pub enum Error {
     WriteHeaderFail,
     ReadHeaderFail,
     DeleteHeaderFail,
-    /// 秒传（Redis）后端故障：消息原样透传给调用方日志，对外报 `upload_error`
+    /// 秒传（Redis）后端故障：消息原样透传给调用方日志，对外报 `internal_error`
     Backend(String),
-    /// 文件系统错误：对外报 `upload_error`（与 PHP 里未列入白名单的异常同待遇）
+    /// 文件系统错误：对外报 `internal_error`，细节不进响应体
     Io(std::io::Error),
 }
 
 impl Error {
-    /// 对应的翻译键。
+    /// §4 映射：语义唯一的变体给出 `(状态码, 机器码)`；一码多义的变体返回 `None`。
+    pub fn outcome(&self) -> Option<(u16, &'static str)> {
+        Some(match self {
+            Self::InvalidResourceParams => (400, "invalid_parameter"),
+            Self::InvalidGroup => (400, "invalid_group"),
+            Self::InvalidResourceSize => (413, "payload_too_large"),
+            Self::InvalidResourceType | Self::MissingMimetype => (415, "unsupported_media_type"),
+            Self::HashMismatch => (422, "hash_mismatch"),
+            // 一码多义：调用点必须按语义拆开（分组 / 解码 / 临时资源 / hash 格式各不相同）
+            Self::InvalidOperation | Self::ReadHeaderFail => return None,
+            // 磁盘 / IO / 索引等内部失败；真因只进日志
+            Self::UploadError
+            | Self::CreateSubfolderFail
+            | Self::CreateResourceFail
+            | Self::WriteResourceFail
+            | Self::RenameResourceFail
+            | Self::DeleteResourceFail
+            | Self::CreateHeaderFail
+            | Self::WriteHeaderFail
+            | Self::DeleteHeaderFail
+            | Self::Backend(_)
+            | Self::Io(_) => (500, "internal_error"),
+        })
+    }
+
+    /// 日志文案的翻译键 —— 比机器码更具体（`create_header_fail` vs `internal_error`）。
     pub fn key(&self) -> &'static str {
         match self {
             Self::InvalidResourceParams => "invalid_resource_params",
             Self::InvalidResourceSize => "invalid_resource_size",
             Self::InvalidResourceType => "invalid_resource_type",
             Self::MissingMimetype => "missing_mimetype",
+            Self::InvalidGroup => "invalid_group",
+            Self::HashMismatch => "hash_mismatch",
             Self::InvalidOperation => "invalid_operation",
             Self::CreateSubfolderFail => "create_subfolder_fail",
             Self::CreateResourceFail => "create_resource_fail",
@@ -59,20 +91,17 @@ impl Error {
             Self::WriteHeaderFail => "write_header_fail",
             Self::ReadHeaderFail => "read_header_fail",
             Self::DeleteHeaderFail => "delete_header_fail",
-            // 内部故障：对外只说「上传出错」，细节不进响应体
+            // 内部故障：日志里也只说「上传出错」，细节另附
             Self::UploadError | Self::Backend(_) | Self::Io(_) => "upload_error",
         }
     }
+}
 
-    /// 是否是可以原样告知客户端的「已知错误」。
-    pub fn is_known(&self) -> bool {
-        !matches!(self, Self::Backend(_) | Self::Io(_) | Self::UploadError)
-    }
+/// 内部错误 → 问题响应（`locale` 为 `None` 时用默认语种）。
+pub fn error_problem(err: &Error, locale: Option<&str>) -> Problem {
+    let (status, code) = err.outcome().unwrap_or((500, "internal_error"));
 
-    /// 按语种渲染给客户端的文案。
-    pub fn localized(&self, locale: &str) -> String {
-        i18n::translate(self.key(), locale).to_string()
-    }
+    Problem::localized(status, code, locale, Vec::new())
 }
 
 impl fmt::Display for Error {
@@ -109,26 +138,53 @@ mod tests {
     use super::*;
 
     #[test]
-    fn known_errors_reach_the_client() {
-        assert_eq!(Error::InvalidOperation.localized("zh"), "错误：非法操作");
-        assert_eq!(
-            Error::MissingMimetype.localized("en"),
-            "Error: missing mime-type mapping"
-        );
-        assert!(Error::DeleteHeaderFail.is_known());
+    fn outcome_covers_the_frozen_table() {
+        for (err, expected) in [
+            (Error::InvalidResourceParams, (400, "invalid_parameter")),
+            (Error::InvalidGroup, (400, "invalid_group")),
+            (Error::InvalidResourceSize, (413, "payload_too_large")),
+            (Error::InvalidResourceType, (415, "unsupported_media_type")),
+            (Error::MissingMimetype, (415, "unsupported_media_type")),
+            (Error::HashMismatch, (422, "hash_mismatch")),
+            (Error::CreateSubfolderFail, (500, "internal_error")),
+            (Error::WriteHeaderFail, (500, "internal_error")),
+            (Error::UploadError, (500, "internal_error")),
+            (
+                Error::Backend("redis down".into()),
+                (500, "internal_error"),
+            ),
+        ] {
+            assert_eq!(err.outcome(), Some(expected), "{err:?}");
+        }
     }
 
-    /// 内部故障不泄漏细节：对外一律 upload_error。
+    /// 一码多义的变体不给映射，逼调用点自己拆（分组/解码/临时资源/hash 格式）。
     #[test]
-    fn internal_errors_collapse_to_upload_error() {
-        let backend = Error::Backend("redis: connection refused".into());
-        assert!(!backend.is_known());
-        assert_eq!(backend.localized("zh"), "错误: 上传发生错误");
-        assert_eq!(backend.localized("en"), "Error: error occurs during upload");
+    fn ambiguous_variants_have_no_outcome() {
+        assert_eq!(Error::InvalidOperation.outcome(), None);
+        assert_eq!(Error::ReadHeaderFail.outcome(), None);
 
+        // 真漏了映射也只给 500，不猜 4xx，也不把内部细节带进响应体
+        let problem = error_problem(&Error::InvalidOperation, Some("zh"));
+        assert_eq!((problem.status(), problem.code), (500, "internal_error"));
+        assert_eq!(problem.title, "错误：服务器内部错误");
+    }
+
+    #[test]
+    fn problem_titles_follow_the_request_locale() {
+        let zh = error_problem(&Error::HashMismatch, Some("zh-CN"));
+        assert_eq!(zh.to_json(), r#"{"type":"about:blank","title":"错误：文件完整性校验不通过","status":422,"code":"hash_mismatch"}"#);
+
+        let en = error_problem(&Error::InvalidGroup, None);
+        assert_eq!(en.title, "Error: invalid upload group");
+    }
+
+    /// 内部故障不泄漏细节：对外 internal_error，日志里能看到真因。
+    #[test]
+    fn internal_details_stay_in_the_log() {
         let io = Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "nope"));
-        assert_eq!(io.localized("en"), "Error: error occurs during upload");
-        // 但日志里要能看到真因
+        assert_eq!(error_problem(&io, None).code, "internal_error");
         assert!(format!("{io}").contains("nope"));
+        assert!(format!("{}", Error::Backend("conn refused".into())).contains("conn refused"));
     }
 }

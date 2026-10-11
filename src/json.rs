@@ -1,111 +1,128 @@
 // Copyright (c) 2026 erik <erik@erik.xyz> — https://erik.xyz
 
-//! 上传接口的 JSON 响应 —— 对应 PHP 版 `Responser.php` + 前端的读取约定。
+//! 上传接口的响应体 —— 成功体是 snake_case 的「上传结果」，失败体是 RFC 9457 问题响应。
 //!
-//! 手写而非引 `serde_json`：字段集是固定的六个，且本 crate 默认 feature 下要求零依赖。
-//! 输出与 PHP 的 `json($result)`（`JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES`）
-//! 对齐 —— **非 ASCII 原样输出、斜杠不转义**，只有引号、反斜杠与控制字符走转义。
+//! 手写 JSON 而非引 `serde_json`：字段集固定，且本 crate 默认 feature 下要求零依赖。
+//! 转义规则：**非 ASCII 原样输出、斜杠不转义**，只有引号、反斜杠与控制字符走转义。
 //!
-//! 字段名严格照抄 PHP 的 camelCase：前端 `aetherupload-core.js` 直接读
-//! `rst.chunkSize` / `rst.resourceTempBaseName` / `rst.savedPath` / `rst.error`。
-//!
-//! 这里只产出**响应体**。状态码与响应头（`X-Content-Type-Options` 等）由适配器加
-//! —— PHP 版里它们挂在 `Runtime::response()` 返回的框架响应对象上，Rust 版则作为
-//! 数据交给各框架适配器（见 `integrations/`）。
+//! 这里只产出**响应体**；状态码与响应头由载体处理：原生宿主用 [`crate::guard::JsonBody`]，
+//! 框架适配器用各自的响应对象（见 `integrations/`）。
 
-/// `preprocess` 的响应体。
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PreprocessResult {
-    /// `None` = 成功（JSON 里输出 `0`，与 PHP 的 `'error' => 0` 一致）；
-    /// `Some(消息)` = 失败（JSON 里输出该消息字符串）。
-    pub error: Option<String>,
-    pub chunk_size: u64,
-    pub group_sub_dir: String,
-    pub resource_temp_base_name: String,
-    pub resource_ext: String,
-    pub saved_path: String,
+use crate::controller::upload::{PreprocessOk, SaveChunkOk};
+use crate::i18n;
+
+/// 问题响应（`application/problem+json`）—— 2.0 起失败一律用它。
+///
+/// `code` 是稳定的机器码（状态码 × code 映射表见 README），`title` 是按请求 `locale`
+/// 本地化的人类可读消息；`extra` 是扩展成员（目前只有 `chunk_out_of_order` 的
+/// `expected_index`）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Problem {
+    pub status: u16,
+    pub code: &'static str,
+    pub title: String,
+    pub extra: Vec<(&'static str, String)>,
 }
 
-/// `saveChunk` 的响应体。
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SaveChunkResult {
-    pub error: Option<String>,
-    pub saved_path: String,
-}
-
-impl PreprocessResult {
-    /// 失败响应：字段保持默认值，只带错误消息（与 PHP `reportError()` 对 `$result` 的
-    /// 处理一致 —— 未赋值的项仍是预处理里初始化的 0 / 空串）。
-    pub fn fail(error: Option<String>) -> Self {
+impl Problem {
+    /// 显式构造：`title` 由调用方给。内核代码走 [`Problem::localized`] 一族，
+    /// 文案只在查 i18n 表的那一处产生。
+    pub fn new(
+        status: u16,
+        code: &'static str,
+        title: impl Into<String>,
+        extra: Vec<(&'static str, String)>,
+    ) -> Self {
         Self {
-            error,
-            ..Self::default()
+            status,
+            code,
+            title: title.into(),
+            extra,
         }
     }
 
+    /// 按 `code` 查 i18n 表构造（`locale` 为 `None` 时用默认语种）——
+    /// 本地化集中在这里，适配层与 [`crate::guard::Guard`] 不许把 `title` 换成自己的文案。
+    pub(crate) fn localized(
+        status: u16,
+        code: &'static str,
+        locale: Option<&str>,
+        extra: Vec<(&'static str, String)>,
+    ) -> Self {
+        let locale = locale.unwrap_or(i18n::DEFAULT_LOCALE);
+
+        Self::new(status, code, i18n::translate(code, locale), extra)
+    }
+
+    /// 400 `invalid_request_body`：请求体无法解析 / 缺 `Content-Type` ——
+    /// **适配层**判定「这条请求本身不合法」时用它；内核的参数错误是 `invalid_parameter`。
+    pub fn invalid_request_body(locale: Option<&str>) -> Self {
+        Self::localized(400, "invalid_request_body", locale, Vec::new())
+    }
+
+    /// 404 `resource_not_found`：文件端点（display / download）找不到资源。
+    pub fn resource_not_found(locale: Option<&str>) -> Self {
+        Self::localized(404, "resource_not_found", locale, Vec::new())
+    }
+
+    /// 413 `payload_too_large`：**适配层**处理框架自己的 body 上限时用它 ——
+    /// 与内核分块写入超限共用同一个 code，不许把框架 413 降级成 400。
+    pub fn payload_too_large(locale: Option<&str>) -> Self {
+        Self::localized(413, "payload_too_large", locale, Vec::new())
+    }
+
+    /// 400 `invalid_parameter`：内核参数校验失败（适配层自校参数时同用）——
+    /// code 与文案都取自同一张 i18n 表，适配层不许自造文案。
+    pub fn invalid_parameter(locale: Option<&str>) -> Self {
+        Self::localized(400, "invalid_parameter", locale, Vec::new())
+    }
+
+    pub fn status(&self) -> u16 {
+        self.status
+    }
+
+    /// 问题响应的固定 `Content-Type`（不带 charset）。
+    pub fn content_type(&self) -> &'static str {
+        "application/problem+json"
+    }
+
+    /// RFC 9457 形态：`type` / `title` / `status` / `code`，其后跟扩展成员。
     pub fn to_json(&self) -> String {
         let mut out = String::with_capacity(160);
 
         out.push('{');
-        push_key(&mut out, "error");
-        match &self.error {
-            Some(message) => push_string(&mut out, message),
-            None => out.push('0'),
+        push_key(&mut out, "type");
+        push_string(&mut out, "about:blank");
+        out.push(',');
+        push_key(&mut out, "title");
+        push_string(&mut out, &self.title);
+        out.push(',');
+        push_key(&mut out, "status");
+        out.push_str(&self.status.to_string());
+        out.push(',');
+        push_key(&mut out, "code");
+        push_string(&mut out, self.code);
+
+        for (key, value) in &self.extra {
+            out.push(',');
+            push_key(&mut out, key);
+            push_extra_value(&mut out, value);
         }
-        out.push(',');
-        push_key(&mut out, "chunkSize");
-        out.push_str(&self.chunk_size.to_string());
-        out.push(',');
-        push_key(&mut out, "groupSubDir");
-        push_string(&mut out, &self.group_sub_dir);
-        out.push(',');
-        push_key(&mut out, "resourceTempBaseName");
-        push_string(&mut out, &self.resource_temp_base_name);
-        out.push(',');
-        push_key(&mut out, "resourceExt");
-        push_string(&mut out, &self.resource_ext);
-        out.push(',');
-        push_key(&mut out, "savedPath");
-        push_string(&mut out, &self.saved_path);
+
         out.push('}');
 
         out
     }
 }
 
-impl SaveChunkResult {
-    pub fn fail(error: Option<String>) -> Self {
-        Self {
-            error,
-            saved_path: String::new(),
-        }
-    }
-
-    pub fn to_json(&self) -> String {
-        let mut out = String::with_capacity(96);
-
-        out.push('{');
-        push_key(&mut out, "error");
-        match &self.error {
-            Some(message) => push_string(&mut out, message),
-            None => out.push('0'),
-        }
-        out.push(',');
-        push_key(&mut out, "savedPath");
-        push_string(&mut out, &self.saved_path);
-        out.push('}');
-
-        out
-    }
-}
-
-fn push_key(out: &mut String, key: &str) {
+/// JSON 对象键（含引号与冒号）。
+pub(crate) fn push_key(out: &mut String, key: &str) {
     push_string(out, key);
     out.push(':');
 }
 
 /// JSON 字符串（含引号），转义规则见模块文档。
-fn push_string(out: &mut String, value: &str) {
+pub(crate) fn push_string(out: &mut String, value: &str) {
     out.push('"');
 
     for c in value.chars() {
@@ -127,73 +144,140 @@ fn push_string(out: &mut String, value: &str) {
     out.push('"');
 }
 
+/// 扩展成员的值：纯十进制数字按 JSON 数值输出（`expected_index` 要与客户端手里的
+/// 序号做数值比较），其余按字符串转义输出。
+fn push_extra_value(out: &mut String, value: &str) {
+    if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
+        out.push_str(value);
+    } else {
+        push_string(out, value);
+    }
+}
+
+/// 拼 `preprocess` 的 200 响应体（字段名与前端读取约定一致）。
+pub fn upload_ok_to_json(ok: &PreprocessOk) -> String {
+    let mut out = String::with_capacity(160);
+
+    out.push('{');
+    push_key(&mut out, "chunk_size");
+    out.push_str(&ok.chunk_size.to_string());
+    out.push(',');
+    push_key(&mut out, "resource_temp_base_name");
+    push_string(&mut out, &ok.resource_temp_base_name);
+    out.push(',');
+    push_key(&mut out, "group_sub_dir");
+    push_string(&mut out, &ok.group_sub_dir);
+    out.push(',');
+    push_key(&mut out, "resource_ext");
+    push_string(&mut out, &ok.resource_ext);
+    out.push(',');
+    push_key(&mut out, "saved_path");
+    push_string(&mut out, &ok.saved_path);
+    out.push('}');
+
+    out
+}
+
+/// 拼 `saveChunk` 的 200 响应体。
+pub fn save_chunk_ok_to_json(ok: &SaveChunkOk) -> String {
+    let mut out = String::with_capacity(40);
+
+    out.push('{');
+    push_key(&mut out, "saved_path");
+    push_string(&mut out, &ok.saved_path);
+    out.push('}');
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::controller::upload::{PreprocessOk, SaveChunkOk};
     use super::*;
 
     #[test]
-    fn preprocess_failure_matches_php_shape() {
-        let result = PreprocessResult::fail(Some("错误：缺少必要的文件参数".into()));
+    fn problem_body_has_the_frozen_fields() {
+        let problem = Problem::new(
+            409,
+            "chunk_out_of_order",
+            "错误：分块序号不连续",
+            vec![("expected_index", "3".into())],
+        );
+
+        assert_eq!(problem.status(), 409);
+        assert_eq!(problem.content_type(), "application/problem+json");
         assert_eq!(
-            result.to_json(),
-            r#"{"error":"错误：缺少必要的文件参数","chunkSize":0,"groupSubDir":"","resourceTempBaseName":"","resourceExt":"","savedPath":""}"#
+            problem.to_json(),
+            r#"{"type":"about:blank","title":"错误：分块序号不连续","status":409,"code":"chunk_out_of_order","expected_index":3}"#
         );
     }
 
     #[test]
-    fn preprocess_success_has_zero_error() {
-        let result = PreprocessResult {
-            error: None,
+    fn titles_come_from_the_code_and_locale() {
+        let zh = Problem::resource_not_found(Some("zh-CN"));
+        assert_eq!(
+            zh.to_json(),
+            r#"{"type":"about:blank","title":"错误：资源不存在","status":404,"code":"resource_not_found"}"#
+        );
+
+        // 缺省语种是 en
+        assert!(Problem::resource_not_found(None).title.starts_with("Error:"));
+
+        let body = Problem::invalid_request_body(Some("zh"));
+        assert_eq!(body.status(), 400);
+        assert_eq!(body.code, "invalid_request_body");
+        assert_eq!(body.title, "错误：请求体无法解析");
+
+        // 框架层 body 上限用的便利构造，与内核 413 同码
+        let body = Problem::payload_too_large(None);
+        assert_eq!(body.status(), 413);
+        assert_eq!(body.code, "payload_too_large");
+        assert!(body.title.starts_with("Error:"));
+
+        // 内核参数校验与适配层自校参数共用（§11.7），文案同源
+        let body = Problem::invalid_parameter(Some("zh"));
+        assert_eq!(body.status(), 400);
+        assert_eq!(body.code, "invalid_parameter");
+        assert_eq!(body.title, "错误：请求参数非法");
+    }
+
+    /// 成功体是 snake_case 的上传结果，没有 error 字段。
+    #[test]
+    fn upload_ok_bodies_are_snake_case() {
+        let pre = PreprocessOk {
             chunk_size: 1_000_000,
+            resource_temp_base_name: "34c0fbcc4b7b1258".into(),
             group_sub_dir: "202610".into(),
-            resource_temp_base_name: "0123456789abcdef".into(),
-            resource_ext: "jpg".into(),
+            resource_ext: "txt".into(),
             saved_path: String::new(),
         };
 
         assert_eq!(
-            result.to_json(),
-            r#"{"error":0,"chunkSize":1000000,"groupSubDir":"202610","resourceTempBaseName":"0123456789abcdef","resourceExt":"jpg","savedPath":""}"#
+            upload_ok_to_json(&pre),
+            r#"{"chunk_size":1000000,"resource_temp_base_name":"34c0fbcc4b7b1258","group_sub_dir":"202610","resource_ext":"txt","saved_path":""}"#
         );
-    }
-
-    /// 前端直接读 savedPath：秒传命中与末块完成都靠它。
-    #[test]
-    fn save_chunk_success_and_failure() {
-        let ok = SaveChunkResult {
-            error: None,
-            saved_path: "file_202610_d41d8cd9.jpg".into(),
-        };
         assert_eq!(
-            ok.to_json(),
-            r#"{"error":0,"savedPath":"file_202610_d41d8cd9.jpg"}"#
-        );
-
-        let failed = SaveChunkResult::fail(Some("Error: error occurs during upload".into()));
-        assert_eq!(
-            failed.to_json(),
-            r#"{"error":"Error: error occurs during upload","savedPath":""}"#
+            save_chunk_ok_to_json(&SaveChunkOk {
+                saved_path: "file_202610_x.txt".into()
+            }),
+            r#"{"saved_path":"file_202610_x.txt"}"#
         );
     }
 
     #[test]
     fn escaping_follows_json_rules() {
-        // 非 ASCII 不转义（PHP 用 JSON_UNESCAPED_UNICODE）；斜杠不转义
-        let result = SaveChunkResult {
-            error: Some("路径/错误 \"引号\"\\反斜杠\n换行".into()),
-            saved_path: String::new(),
-        };
-        let json = result.to_json();
+        // 非 ASCII 不转义、斜杠不转义
+        let problem = Problem::new(400, "invalid_parameter", "路径/错误 \"引号\"\\反斜杠\n换行", vec![]);
+        let json = problem.to_json();
         assert!(
-            json.contains(r#""路径/错误 \"引号\"\\反斜杠\n换行""#),
+            json.contains(r#""title":"路径/错误 \"引号\"\\反斜杠\n换行""#),
             "实际: {json}"
         );
 
-        // 控制字符走 \u 转义
-        let result = SaveChunkResult {
-            error: Some("\u{01}".into()),
-            saved_path: String::new(),
-        };
-        assert!(result.to_json().contains(r#""\u0001""#));
+        // 控制字符走 \u 转义；扩展成员里的非数字串同样走字符串转义
+        let problem = Problem::new(400, "x", "\u{01}", vec![("detail", "a\"b".into())]);
+        let json = problem.to_json();
+        assert!(json.contains(r#""title":"\u0001""#), "实际: {json}");
+        assert!(json.contains(r#""detail":"a\"b""#), "实际: {json}");
     }
 }

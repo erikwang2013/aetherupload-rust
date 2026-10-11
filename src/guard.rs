@@ -1,11 +1,11 @@
 // Copyright (c) 2026 erik <erik@erik.xyz> — https://erik.xyz
 
-//! 原生请求守卫：**不依赖任何框架**的入口（对应 PHP 版的「原生 PHP（无框架）」适配器）。
+//! 原生请求守卫：**不依赖任何框架**的入口（手写服务器、尚未适配的框架都用它）。
 //!
 //! 八个框架适配器（Axum / Actix Web / Rocket / Poem / Salvo / Warp / bee-rust / e-cat）做的都是
 //! 同一件事：把宿主请求翻成 [`FormData`]、把内核响应翻成宿主响应。这里把这两件事收成
-//! 一个不依赖任何框架的 [`Guard`] —— 手写服务器（hyper / tiny-http / 自研 TCP 服务，
-//! 或尚未适配的框架）拿它接线即可，与八个适配器同权。
+//! 一个不依赖任何框架的 [`Guard`] —— 手写服务器（hyper / tiny-http / 自研 TCP 服务）
+//! 拿它接线即可，与八个适配器同权。
 //!
 //! ```
 //! use std::sync::Arc;
@@ -22,7 +22,7 @@
 //! match guard.routes().classify("GET", "/aetherupload/display/file_202610_abc.jpg") {
 //!     Some(aetherupload::GuardRoute::Display { saved_path }) => {
 //!         let response = guard.display(&saved_path);   // ResourceResponse，含状态码与响应头
-//!         assert_eq!(response.status(), 404);          // 文件不存在
+//!         assert_eq!(response.status(), 404);          // 文件不存在：404 问题响应
 //!     }
 //!     _ => unreachable!(),
 //! }
@@ -32,11 +32,14 @@
 
 use std::sync::Arc;
 
-use crate::controller::{ResourceController, ResourceResponse, UploadController};
+use crate::controller::{
+    ResourceController, ResourceResponse, UploadController, save_chunk_ok_to_json, upload_ok_to_json,
+};
 use crate::form::FormData;
+use crate::json::Problem;
 use crate::runtime::Runtime;
 
-/// 上传接口的响应：HTTP 200 + JSON，`body` 就是前端 `aetherupload-core.js` 读的那串。
+/// 上传接口的响应：HTTP 200 + 上传结果，或问题响应（RFC 9457 problem+json）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JsonBody {
     pub status: u16,
@@ -45,12 +48,24 @@ pub struct JsonBody {
 }
 
 impl JsonBody {
-    /// 与 PHP 版 `json($result)` 一致的响应形态。
-    fn json(body: String) -> Self {
+    /// 上传结果（200 + `application/json`），`body` 就是前端 `aetherupload-core.js` 读的那串。
+    pub fn ok(body: String) -> Self {
         Self {
             status: 200,
             content_type: "application/json; charset=utf-8",
             body,
+        }
+    }
+
+    /// 问题响应：状态码与 content-type 都取自 [`Problem`]（宿主不许改写）。
+    ///
+    /// 宿主自己挡下的请求（multipart / urlencoded 读不动、缺 `Content-Type`）也用同一
+    /// 形态回：`JsonBody::problem(&Problem::invalid_request_body(locale))`。
+    pub fn problem(problem: &Problem) -> Self {
+        Self {
+            status: problem.status(),
+            content_type: problem.content_type(),
+            body: problem.to_json(),
         }
     }
 
@@ -87,8 +102,7 @@ pub enum GuardRoute {
 impl GuardRoutes {
     /// 判定一条请求属于哪个入口；不属于这四条路由时返回 `None`。
     ///
-    /// 方法不匹配（例如对上传路由发 GET）同样返回 `None` —— 交回宿主按 404/405 处理，
-    /// 与 PHP 版把方法交给路由层裁决一致。
+    /// 方法不匹配（例如对上传路由发 GET）同样返回 `None` —— 交回宿主按 404/405 处理。
     pub fn classify(&self, method: &str, path: &str) -> Option<GuardRoute> {
         let method = method.to_ascii_uppercase();
         let path = path.split(['?', '#']).next().unwrap_or(path);
@@ -160,18 +174,22 @@ impl Guard {
 
     /// 预处理：校验参数与分组 → 生成临时名 → 秒传判定 → 建 `.part` 与断点文件。
     pub fn preprocess(&self, form: &FormData) -> JsonBody {
-        let result =
-            UploadController::new(self.runtime.clone()).preprocess(&form.to_preprocess_request());
+        let controller = UploadController::new(self.runtime.clone());
 
-        JsonBody::json(result.to_json())
+        match controller.preprocess(&form.to_preprocess_request()) {
+            Ok(ok) => JsonBody::ok(upload_ok_to_json(&ok)),
+            Err(problem) => JsonBody::problem(&problem),
+        }
     }
 
     /// 分块写入：校验 → 追加 → 回写断点；末块走完整校验并落盘。
     pub fn save_chunk(&self, form: &FormData) -> JsonBody {
-        let result =
-            UploadController::new(self.runtime.clone()).save_chunk(&form.to_save_chunk_request());
+        let controller = UploadController::new(self.runtime.clone());
 
-        JsonBody::json(result.to_json())
+        match controller.save_chunk(&form.to_save_chunk_request()) {
+            Ok(ok) => JsonBody::ok(save_chunk_ok_to_json(&ok)),
+            Err(problem) => JsonBody::problem(&problem),
+        }
     }
 
     /// 展示资源（可内联渲染的扩展名会强制转附件）。
@@ -191,8 +209,7 @@ mod tests {
     use crate::config::Config;
 
     fn guard(tag: &str) -> (std::path::PathBuf, Guard) {
-        let base =
-            std::env::temp_dir().join(format!("aetherupload-guard-{tag}-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("aetherupload-guard-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
 
         let runtime = Arc::new(Runtime::new(Config::default(), &base).unwrap());
@@ -200,24 +217,34 @@ mod tests {
         (base, Guard::new(runtime))
     }
 
+    fn text_form(pre: bool) -> FormData {
+        let mut form = FormData::new();
+        form.push_text("resource_name", "a.txt");
+        form.push_text("resource_size", "10");
+        form.push_text("group", "file");
+        form.push_text("locale", "zh");
+
+        if !pre {
+            form.push_text("chunk_total", "1");
+            form.push_text("chunk_index", "1");
+            form.push_text("resource_temp_basename", "0011223344556677");
+            form.push_text("resource_ext", "txt");
+            form.push_text("group_subdir", "202610");
+        }
+
+        form
+    }
+
     #[test]
     fn routes_classify_the_four_endpoints() {
         let (base, guard) = guard("routes");
         let routes = guard.routes();
 
-        assert_eq!(
-            routes.classify("POST", "/aetherupload/preprocess"),
-            Some(GuardRoute::Preprocess)
-        );
-        assert_eq!(
-            routes.classify("POST", "/aetherupload/uploading"),
-            Some(GuardRoute::Uploading)
-        );
+        assert_eq!(routes.classify("POST", "/aetherupload/preprocess"), Some(GuardRoute::Preprocess));
+        assert_eq!(routes.classify("POST", "/aetherupload/uploading"), Some(GuardRoute::Uploading));
         assert_eq!(
             routes.classify("GET", "/aetherupload/display/file_202610_abc.txt"),
-            Some(GuardRoute::Display {
-                saved_path: "file_202610_abc.txt".into()
-            })
+            Some(GuardRoute::Display { saved_path: "file_202610_abc.txt".into() })
         );
         assert_eq!(
             routes.classify("GET", "/aetherupload/download/file_202610_abc.txt/新名字"),
@@ -230,62 +257,84 @@ mod tests {
         // 查询串与 Fragment 不影响判定
         assert_eq!(
             routes.classify("GET", "/aetherupload/display/file_202610_abc.txt?x=1#y"),
-            Some(GuardRoute::Display {
-                saved_path: "file_202610_abc.txt".into()
-            })
+            Some(GuardRoute::Display { saved_path: "file_202610_abc.txt".into() })
         );
 
         // 方法不匹配 / 无关路径 → 交回宿主
         assert_eq!(routes.classify("GET", "/aetherupload/preprocess"), None);
         assert_eq!(routes.classify("POST", "/aetherupload/display/x"), None);
         assert_eq!(routes.classify("GET", "/healthz"), None);
-        // 没有 new_name 的下载路径也算下载（内核会用原名）
+
+        // 没有 new_name 的下载路径也算下载（内核用空串 → 400 invalid_parameter）
         assert_eq!(
             routes.classify("GET", "/aetherupload/download/file_202610_a.txt"),
-            Some(GuardRoute::Download {
-                saved_path: "file_202610_a.txt".into(),
-                new_name: String::new()
-            })
+            Some(GuardRoute::Download { saved_path: "file_202610_a.txt".into(), new_name: String::new() })
         );
 
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// 成功的 preprocess 是 200 上传结果（snake_case），不再是 200 + error 字段。
     #[test]
-    fn preprocess_reports_missing_group_dir_like_php() {
+    fn preprocess_success_is_200_upload_result() {
+        let (base, guard) = guard("preprocess-ok");
+        std::fs::create_dir_all(base.join("storage/app/aetherupload/file")).unwrap();
+        std::fs::create_dir_all(base.join("storage/app/aetherupload/_header")).unwrap();
+
+        let response = guard.preprocess(&text_form(true));
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.content_type, "application/json; charset=utf-8");
+        assert!(response.body.contains(r#""chunk_size":1000000"#), "{}", response.body);
+        assert!(response.body.contains(r#""saved_path":""#), "{}", response.body);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 分组目录缺失是运维/内部故障 → 500 问题响应（`title` 用请求里的语种）。
+    #[test]
+    fn preprocess_failure_is_a_problem_response() {
         let (base, guard) = guard("preprocess");
 
-        // 没建分组目录：预处理应当失败（内核不递归建目录），响应体是 JSON
-        let mut form = FormData::new();
-        form.push_text("resource_name", "a.txt");
-        form.push_text("resource_size", "10");
-        form.push_text("group", "file");
-        form.push_text("locale", "zh");
+        let response = guard.preprocess(&text_form(true));
 
-        let response = guard.preprocess(&form);
-
-        assert_eq!(
-            response.status, 200,
-            "上传接口一律 200，错误在 JSON 的 error 字段里"
-        );
-        assert_eq!(response.content_type, "application/json; charset=utf-8");
-        assert!(
-            response
-                .body
-                .contains("\"error\":\"错误：创建子文件夹失败\""),
-            "{}",
-            response.body
-        );
+        assert_eq!(response.status, 500);
+        assert_eq!(response.content_type, "application/problem+json");
+        assert!(response.body.contains(r#""code":"internal_error""#), "{}", response.body);
+        assert!(response.body.contains(r#""title":"错误：服务器内部错误""#), "{}", response.body);
 
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// 适配层用的便利构造：宿主自己挡下的请求也回同一形态，不许自造文案。
     #[test]
-    fn display_reports_404_for_missing_resource() {
+    fn problem_bodies_use_the_frozen_constructors() {
+        let body = JsonBody::problem(&Problem::invalid_request_body(Some("en")));
+        assert_eq!(body.status, 400);
+        assert_eq!(body.content_type, "application/problem+json");
+        assert!(body.body.contains(r#""code":"invalid_request_body""#));
+
+        let body = JsonBody::problem(&Problem::payload_too_large(None));
+        assert_eq!(body.status, 413);
+
+        let body = JsonBody::problem(&Problem::invalid_parameter(Some("en")));
+        assert_eq!(body.status, 400);
+        assert!(body.body.contains(r#""code":"invalid_parameter""#));
+
+        assert_eq!(JsonBody::problem(&Problem::resource_not_found(None)).status, 404);
+    }
+
+    #[test]
+    fn file_endpoints_report_problem_responses() {
         let (base, guard) = guard("display");
 
-        assert_eq!(guard.display("file_202610_missing.txt").status(), 404);
-        assert_eq!(guard.download("file_202610_missing.txt", "x").status(), 404);
+        // 文件不存在 → 404 问题响应；下载名缺失（空串）→ 400
+        let response = guard.display("file_202610_missing.txt");
+        assert_eq!(response.status(), 404);
+        assert!(matches!(response, ResourceResponse::Problem(_)));
+
+        let response = guard.download("file_202610_missing.txt", "");
+        assert_eq!(response.status(), 400);
 
         let _ = std::fs::remove_dir_all(&base);
     }
