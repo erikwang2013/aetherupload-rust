@@ -20,17 +20,27 @@
 //! 表单用 `Form<TempFile>` 提取：分块由 rocket 落成临时文件，内核以 `ChunkBody::Path`
 //! 追加，全程不进内存。
 //!
+//! 响应形态（2.0 协议）：两个上传入口成功是 200 + `application/json`（snake_case
+//! 上传结果），失败是 RFC 9457 问题响应 —— 内核的 `Problem` 状态码与文案原样透出。
+//! 框架层的拒绝也统一成同一形态，**不透出 rocket 自己的判定**（422 会与内核的
+//! `hash_mismatch` 撞码）：体级失败（畸形/截断 multipart、断流）与 Forward（缺
+//! `Content-Type` / 编码不匹配）→ 400 `invalid_request_body`；字段级失败（未知/重复
+//! 字段）→ 400 `invalid_parameter`（别家这类错误由内核回；全 `Option` 字段下缺字段
+//! 不进 `Errors`、照常流到内核）；413（`data-form` 限额）保持 413 `payload_too_large`；
+//! 定位到文件但打开失败 → 404 `resource_not_found`。
+//!
 //! **请求体上限**：rocket 对 multipart 整条流用的是 `data-form` 限额（默认 2 MiB），
 //! 比一次上传的分块大不了多少 —— [`mount`] 会把它放开到 [`body_limit`]（分块大小 + 1MB 余量）。
 //!
 //! 本地文件下发用 `rocket::fs` 那套流式响应（`sized_body` 挂 tokio 文件，边读边发），
-//! 整份文件不进内存；**不实现 HTTP Range** —— 与 PHP/webman 版一致，需要断点下载 /
+//! 整份文件不进内存；**不实现 HTTP Range** —— 与 1.x 一致，需要断点下载 /
 //! 视频拖动请开 `x_accel_redirect` 交给前置服务器。
 
 use std::io::Cursor;
 use std::sync::Arc;
 
 use rocket::data::{Data, FromData};
+use rocket::form::error::ErrorKind;
 use rocket::form::{Form, FromForm};
 use rocket::fs::TempFile;
 use rocket::http::{Method, Status};
@@ -43,7 +53,11 @@ use crate::controller::{
     ChunkBody, PreprocessRequest, ResourceController, ResourceResponse, SaveChunkRequest,
     UploadController,
 };
-use crate::integrations::{FormData, body_limit};
+use crate::integrations::{
+    FormData, body_limit, invalid_parameter_response, invalid_request_body_response, ok_response,
+    payload_too_large_response, problem_response, resource_not_found_response,
+};
+use crate::json::{save_chunk_ok_to_json, upload_ok_to_json};
 use crate::runtime::Runtime;
 
 /// 挂载四条路由（路径取自配置的 `route_*`），顺带放开 multipart 的请求体上限。
@@ -216,8 +230,17 @@ fn push_text(form: &mut FormData, name: &str, value: Option<&str>) {
     }
 }
 
-/// 解析表单；读不出来时把 rocket 的判定原样交回去 —— Forward 归 Forward，
-/// Error 带它自己的状态码（字段非法 → 422，超过 `data-form` 限额 → 413）。
+/// 解析表单；框架层的拒绝一律改回我们的问题响应（协议 §3 的形态）。
+///
+/// - 413（`data-form` 限额，`Errors` 里是 `Multipart(FieldSizeExceeded/StreamSizeExceeded)`）
+///   保持状态码 → 413 `payload_too_large`；
+/// - 体级失败（`ErrorKind::Multipart` / `Io`：畸形/截断 multipart、断流）→ 400
+///   `invalid_request_body`，与别家的解析失败同一归类；
+/// - 字段级失败（未知/重复字段等）→ 400 `invalid_parameter`（别家这类错误由内核回；
+///   全 `Option` 字段下缺字段不进 `Errors`，照常流到内核）。
+///
+/// Forward（缺 Content-Type / 编码不匹配）同归 400 `invalid_request_body`。
+/// **不把 rocket 的 422 原样透出**（会与内核的 `hash_mismatch` 撞码）。
 ///
 /// rocket 的 `Outcome` 本身就大（含 `Data` / `Response`），为讨好 lint 而 Box 一层没有意义。
 #[allow(clippy::result_large_err)]
@@ -229,8 +252,21 @@ async fn parse<'r, T: FromForm<'r>>(
 
     match Form::<T>::from_data(req, data).await {
         DataOutcome::Success(form) => Ok(form),
-        DataOutcome::Forward((data, status)) => Err(Outcome::Forward((data, status))),
-        DataOutcome::Error((status, _)) => Err(Outcome::Error(status)),
+        DataOutcome::Error((status, _)) if status == Status::PayloadTooLarge => {
+            Err(json_outcome(payload_too_large_response(None)))
+        }
+        DataOutcome::Error((_, errors)) => {
+            let body_level = errors
+                .iter()
+                .any(|error| matches!(error.kind, ErrorKind::Multipart(_) | ErrorKind::Io(_)));
+
+            Err(json_outcome(if body_level {
+                invalid_request_body_response(None)
+            } else {
+                invalid_parameter_response(None)
+            }))
+        }
+        DataOutcome::Forward(_) => Err(json_outcome(invalid_request_body_response(None))),
     }
 }
 
@@ -244,9 +280,12 @@ async fn preprocess<'r>(
         Err(outcome) => return outcome,
     };
 
-    let result = UploadController::new(Arc::clone(runtime)).preprocess(&form.to_request());
+    let triple = match UploadController::new(Arc::clone(runtime)).preprocess(&form.to_request()) {
+        Ok(ok) => ok_response(upload_ok_to_json(&ok)),
+        Err(problem) => problem_response(&problem),
+    };
 
-    json_response(result.to_json())
+    json_outcome(triple)
 }
 
 async fn save_chunk<'r>(
@@ -260,14 +299,18 @@ async fn save_chunk<'r>(
     };
 
     // 表单要活到这一行之后：`resource_chunk` 的临时文件随表单一起销毁
-    let result = UploadController::new(Arc::clone(runtime)).save_chunk(&form.to_request());
+    let triple = match UploadController::new(Arc::clone(runtime)).save_chunk(&form.to_request()) {
+        Ok(ok) => ok_response(save_chunk_ok_to_json(&ok)),
+        Err(problem) => problem_response(&problem),
+    };
 
-    json_response(result.to_json())
+    json_outcome(triple)
 }
 
 async fn display<'r>(runtime: &Arc<Runtime>, req: &'r Request<'_>) -> Outcome<'r> {
     let Some(Ok(saved_path)) = req.param::<String>(0) else {
-        return rejection();
+        // 路由模板保证该段存在，此分支实际不可达
+        return json_outcome(invalid_request_body_response(None));
     };
 
     serve(ResourceController::new(Arc::clone(runtime)).display(&saved_path)).await
@@ -277,7 +320,8 @@ async fn download<'r>(runtime: &Arc<Runtime>, req: &'r Request<'_>) -> Outcome<'
     let (Some(Ok(saved_path)), Some(Ok(new_name))) =
         (req.param::<String>(0), req.param::<String>(1))
     else {
-        return rejection();
+        // 同 display：模板保证两段都在
+        return json_outcome(invalid_request_body_response(None));
     };
 
     serve(ResourceController::new(Arc::clone(runtime)).download(&saved_path, &new_name)).await
@@ -288,13 +332,8 @@ async fn serve<'r>(response: ResourceResponse) -> Outcome<'r> {
     let headers = response.headers();
 
     match response {
-        ResourceResponse::NotFound(body) => {
-            let mut response: Response<'r> = Response::new();
-            response.set_status(Status::NotFound);
-            response.set_sized_body(body.len(), Cursor::new(body));
-
-            Outcome::Success(response)
-        }
+        // 失败一律问题响应：状态码与文案原样来自内核
+        ResourceResponse::Problem(problem) => json_outcome(problem_response(&problem)),
 
         ResourceResponse::Redirect { location } => {
             let mut builder: rocket::response::Builder<'r> = Response::build();
@@ -318,11 +357,12 @@ async fn serve<'r>(response: ResourceResponse) -> Outcome<'r> {
             download_name,
         } => {
             let Ok(file) = rocket::tokio::fs::File::open(&path).await else {
-                return not_found();
+                // 寻址已通过但打开失败：仍按 404 resource_not_found 回
+                return json_outcome(resource_not_found_response());
             };
 
             let Ok(meta) = rocket::tokio::fs::metadata(&path).await else {
-                return not_found();
+                return json_outcome(resource_not_found_response());
             };
 
             let mut builder: rocket::response::Builder<'r> = Response::build();
@@ -345,25 +385,14 @@ async fn serve<'r>(response: ResourceResponse) -> Outcome<'r> {
     }
 }
 
-fn json_response<'r>(body: String) -> Outcome<'r> {
+/// 三元组（状态码 + Content-Type + 体）→ rocket 响应。成功体与问题响应共用。
+fn json_outcome<'r>((status, content_type, body): (u16, &'static str, String)) -> Outcome<'r> {
     let body = body.into_bytes();
 
     let mut response: Response<'r> = Response::new();
-    response.set_status(Status::Ok);
-    response.set_raw_header("Content-Type", "application/json");
+    response.set_status(Status::from_code(status).unwrap_or(Status::InternalServerError));
+    response.set_raw_header("Content-Type", content_type);
     response.set_sized_body(body.len(), Cursor::new(body));
-
-    Outcome::Success(response)
-}
-
-fn rejection<'r>() -> Outcome<'r> {
-    Outcome::Error(Status::BadRequest)
-}
-
-fn not_found<'r>() -> Outcome<'r> {
-    let mut response: Response<'r> = Response::new();
-    response.set_status(Status::NotFound);
-    response.set_sized_body(9, Cursor::new(b"not found".to_vec()));
 
     Outcome::Success(response)
 }
@@ -375,7 +404,7 @@ fn apply_headers<'r>(builder: &mut rocket::response::Builder<'r>, headers: Vec<(
     }
 }
 
-/// 由扩展名推断 Content-Type（走内核的 MIME 表，与 PHP 的文件响应同一张表）。
+/// 由扩展名推断 Content-Type（走内核的 MIME 表，与上传校验同一张）。
 fn content_type_for(path: &std::path::Path) -> Option<String> {
     let extension = path.extension()?.to_string_lossy().to_ascii_lowercase();
     let mime = crate::mime::mime_for_extension(&extension, &[]);

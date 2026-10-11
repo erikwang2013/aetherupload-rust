@@ -18,6 +18,9 @@
 //! e-cat 侧的自定义中间件（鉴权、限流等）按 axum 的 `layer` 语义叠在 [`routes`] 外层；
 //! body 上限已经按 `chunk_size` 放开（见 [`crate::integrations::body_limit`]），
 //! 不用再调 e-cat 的 body 限制。
+//!
+//! 响应形态（2.0 协议）：成功 200 + `application/json`、失败 RFC 9457 问题响应，
+//! 连同解析失败与框架层 413 的处置一起继承 axum 适配层 —— 这一层不额外翻译。
 
 use std::sync::Arc;
 

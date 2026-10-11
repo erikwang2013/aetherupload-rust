@@ -6,6 +6,14 @@
 //! `tokio::fs` 异步读回内存交给内核（默认分块 1MB，读盘不做阻塞调用）。内核同样
 //! 接受 `ChunkBody::Path`，想省掉这次拷贝可把 `part.path()` 直接传进去。
 //!
+//! 响应形态（2.0 协议）：两个上传入口成功是 200 + `application/json`（snake_case
+//! 上传结果），失败是 RFC 9457 问题响应 —— 内核的 `Problem` 状态码与文案原样透出。
+//! 本适配器自己判定的失败也回同一形态：salvo 报 `ParseError::PayloadTooLarge`
+//! （超过 [`body_limit`]）→ 413 `payload_too_large`；缺 `Content-Type` / 坏
+//! multipart 体 → 400 `invalid_request_body`；定位到文件但打开失败 → 404
+//! `resource_not_found`。（唯一例外：hoop 忘了挂导致 depot 里没有 runtime 是宿主
+//! 装配错误，此处仍是 500 纯文本。）
+//!
 //! 本地文件下发用 [`NamedFile`]：超过 1MB 走 `ChunkedFile` 流式读，不把整份文件
 //! 读进内存（1MB 以内由 salvo 预读，省掉小块读的系统调用），并且**顺带支持 HTTP
 //! Range** —— 比 axum / poem 适配层多这一项能力，不需要关掉。
@@ -32,12 +40,14 @@ use std::sync::Arc;
 
 use salvo::async_trait;
 use salvo::fs::NamedFile;
-use salvo::http::header::CONTENT_DISPOSITION;
-use salvo::http::{HeaderName, HeaderValue, Mime, StatusCode};
+use salvo::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
+use salvo::http::{HeaderName, HeaderValue, Mime, ParseError, StatusCode};
 use salvo::{Depot, FlowCtrl, Handler, Request, Response, Router, handler};
 
 use crate::controller::{ChunkBody, ResourceController, ResourceResponse, UploadController};
-use crate::integrations::{FormData, body_limit, display_route, download_route};
+use crate::integrations::{FormData, ParseFailure, body_limit, display_route, download_route};
+use crate::integrations::{ok_response, problem_response, resource_not_found_response};
+use crate::json::{save_chunk_ok_to_json, upload_ok_to_json};
 use crate::runtime::Runtime;
 
 /// 注册四条路由（路径取自配置的 `route_*`）。
@@ -76,13 +86,17 @@ async fn preprocess(req: &mut Request, depot: &mut Depot, res: &mut Response) {
         return internal_error(res);
     };
 
-    let Ok(form) = parse_multipart(req, body_limit(&runtime)).await else {
-        return bad_request(res, "invalid multipart body");
+    let form = match parse_multipart(req, body_limit(&runtime)).await {
+        Ok(form) => form,
+        Err(failure) => return write_triple(res, failure.response()),
     };
 
-    let result = UploadController::new(runtime).preprocess(&form.to_preprocess_request());
+    let triple = match UploadController::new(runtime).preprocess(&form.to_preprocess_request()) {
+        Ok(ok) => ok_response(upload_ok_to_json(&ok)),
+        Err(problem) => problem_response(&problem),
+    };
 
-    let _ = res.write_body(result.to_json());
+    write_triple(res, triple);
 }
 
 #[handler]
@@ -91,23 +105,28 @@ async fn save_chunk(req: &mut Request, depot: &mut Depot, res: &mut Response) {
         return internal_error(res);
     };
 
-    let Ok(form) = parse_multipart(req, body_limit(&runtime)).await else {
-        return bad_request(res, "invalid multipart body");
+    let form = match parse_multipart(req, body_limit(&runtime)).await {
+        Ok(form) => form,
+        Err(failure) => return write_triple(res, failure.response()),
     };
 
-    let result = UploadController::new(runtime).save_chunk(&form.to_save_chunk_request());
+    let triple = match UploadController::new(runtime).save_chunk(&form.to_save_chunk_request()) {
+        Ok(ok) => ok_response(save_chunk_ok_to_json(&ok)),
+        Err(problem) => problem_response(&problem),
+    };
 
-    let _ = res.write_body(result.to_json());
+    write_triple(res, triple);
 }
 
 #[handler]
 async fn display(req: &mut Request, depot: &mut Depot, res: &mut Response) {
-    let Some(saved_path) = req.param::<String>("saved_path") else {
-        return not_found(res, "display fail");
-    };
-
     let Some(runtime) = runtime_of(depot) else {
         return internal_error(res);
+    };
+
+    let Some(saved_path) = req.param::<String>("saved_path") else {
+        // 路由模板保证该段存在，此分支实际不可达
+        return write_triple(res, resource_not_found_response());
     };
 
     let response = ResourceController::new(runtime).display(&saved_path);
@@ -117,15 +136,16 @@ async fn display(req: &mut Request, depot: &mut Depot, res: &mut Response) {
 
 #[handler]
 async fn download(req: &mut Request, depot: &mut Depot, res: &mut Response) {
+    let Some(runtime) = runtime_of(depot) else {
+        return internal_error(res);
+    };
+
     let (Some(saved_path), Some(new_name)) = (
         req.param::<String>("saved_path"),
         req.param::<String>("new_name"),
     ) else {
-        return not_found(res, "download fail");
-    };
-
-    let Some(runtime) = runtime_of(depot) else {
-        return internal_error(res);
+        // 同 display：模板保证两段都在
+        return write_triple(res, resource_not_found_response());
     };
 
     let response = ResourceController::new(runtime).download(&saved_path, &new_name);
@@ -136,11 +156,17 @@ async fn download(req: &mut Request, depot: &mut Depot, res: &mut Response) {
 /// 把 multipart 表单读成 [`FormData`]：文本字段搬进内存，分块字段（salvo 已落临时
 /// 文件）用 `tokio::fs` 异步读回内存 —— 与 axum / poem 适配层保持同一种「分块走内存」
 /// 的取舍。
-async fn parse_multipart(req: &mut Request, limit: usize) -> Result<FormData, String> {
+///
+/// 框架层的解析失败在这里就分好类：超限 413 / 坏体 400（salvo 不吐参数，只有整条
+/// 请求体层级的错误，取不到 `locale`）。
+async fn parse_multipart(req: &mut Request, limit: usize) -> Result<FormData, ParseFailure> {
     let form_data = req
         .form_data_max_size(limit)
         .await
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| match err {
+            ParseError::PayloadTooLarge => ParseFailure::new(FormData::new(), true),
+            _ => ParseFailure::new(FormData::new(), false),
+        })?;
 
     let mut form = FormData::new();
 
@@ -149,9 +175,10 @@ async fn parse_multipart(req: &mut Request, limit: usize) -> Result<FormData, St
     }
 
     if let Some(part) = form_data.files.get("resource_chunk") {
+        // 临时文件读失败按坏体回（适配层拿不到其它更合适的 code）
         let bytes = tokio::fs::read(part.path())
             .await
-            .map_err(|err| err.to_string())?;
+            .map_err(|_| ParseFailure::new(FormData::new(), false))?;
         form.push_file("resource_chunk", ChunkBody::Bytes(bytes));
     }
 
@@ -160,7 +187,8 @@ async fn parse_multipart(req: &mut Request, limit: usize) -> Result<FormData, St
 
 /// 内核响应 → salvo 响应。
 pub async fn serve(response: ResourceResponse, req: &Request, res: &mut Response) {
-    // 内核给的头（含 `X-Content-Type-Options: nosniff`，重定向还带 Location）原样并进来
+    // 内核给的头（含 `X-Content-Type-Options: nosniff`，重定向还带 Location）原样并进来；
+    // 失败三态时这份清单是空的，Content-Type 由问题响应的三元组给
     for (name, value) in response.headers() {
         if let (Ok(name), Ok(value)) = (
             HeaderName::from_bytes(name.as_bytes()),
@@ -171,10 +199,8 @@ pub async fn serve(response: ResourceResponse, req: &Request, res: &mut Response
     }
 
     match response {
-        ResourceResponse::NotFound(body) => {
-            res.status_code(StatusCode::NOT_FOUND);
-            let _ = res.write_body(body);
-        }
+        // 失败一律问题响应：状态码与文案原样来自内核
+        ResourceResponse::Problem(problem) => write_triple(res, problem_response(&problem)),
 
         ResourceResponse::Redirect { .. } => {
             res.status_code(StatusCode::FOUND);
@@ -189,7 +215,8 @@ pub async fn serve(response: ResourceResponse, req: &Request, res: &mut Response
             download_name,
         } => {
             let Ok(mut file) = NamedFile::open(&path).await else {
-                return not_found(res, "not found");
+                // 寻址已通过但打开失败：仍按 404 resource_not_found 回
+                return write_triple(res, resource_not_found_response());
             };
 
             // 内核的 MIME 表（与上传校验同一张）优先于 salvo 自己的推断
@@ -212,27 +239,26 @@ pub async fn serve(response: ResourceResponse, req: &Request, res: &mut Response
     }
 }
 
+/// 三元组（状态码 + Content-Type + 体）→ salvo 响应。
+fn write_triple(res: &mut Response, (status, content_type, body): (u16, &'static str, String)) {
+    res.status_code(StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR));
+    res.headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
+    let _ = res.write_body(body);
+}
+
 /// 从 depot 取 runtime（hoop 已注入；缺失只可能是路由忘了挂 hoop）。
 fn runtime_of(depot: &Depot) -> Option<Arc<Runtime>> {
     depot.get_typed::<Arc<Runtime>>().ok().cloned()
 }
 
-fn bad_request(res: &mut Response, message: &'static str) {
-    res.status_code(StatusCode::BAD_REQUEST);
-    let _ = res.write_body(message);
-}
-
-fn not_found(res: &mut Response, message: &'static str) {
-    res.status_code(StatusCode::NOT_FOUND);
-    let _ = res.write_body(message);
-}
-
+/// 宿主装配错误（hoop 缺失）的兜底：此处仍是纯文本 500。
 fn internal_error(res: &mut Response) {
     res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
     let _ = res.write_body("missing runtime");
 }
 
-/// 由扩展名推断 Content-Type（走内核的 MIME 表，与 PHP 的文件响应同一张表）。
+/// 由扩展名推断 Content-Type（走内核的 MIME 表，与上传校验同一张）。
 fn content_type_for(path: &std::path::Path) -> Option<String> {
     let extension = path.extension()?.to_string_lossy().to_ascii_lowercase();
     let mime = crate::mime::mime_for_extension(&extension, &[]);

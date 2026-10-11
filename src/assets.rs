@@ -1,18 +1,16 @@
 // Copyright (c) 2026 erik <erik@erik.xyz> — https://erik.xyz
 
-//! 前端资产 —— 对应 PHP 版安装时分发到 `public/vendor/aetherupload/` 的那几个文件。
+//! 前端资产 —— 上传组件与示例页，以 `include_str!` 打进库里。
 //!
-//! 以 `include_str!` 打进库里：宿主不必再管静态目录，直接从常量里吐出来即可
-//! （见 `examples/quickstart.rs` 的做法）。也正因如此 `assets/` **不能**进 Cargo 的
-//! `exclude` —— 排掉会当场编译失败。
+//! 宿主不必再管静态目录，直接从常量里吐出来即可（见 `examples/quickstart.rs` 的做法）。
+//! 也正因如此 `assets/` **不能**进 Cargo 的 `exclude` —— 排掉会当场编译失败。
 //!
-//! 与 PHP 版的两处差异（都按 Rust 端最优来，不再逐字节相同）：
+//! 与 1.x 的两处差异（都按 Rust 端最优来）：
 //!
 //! - 脚本的 `preprocess` 改发 **multipart**（`FormData` + `processData/contentType: false`），
-//!   与 `uploadChunk`、与所有适配层同一种形态；PHP 原版脚本发 urlencoded，Rust 端
-//!   自 1.0.4 起两种编码都收，所以那份不改也能跑。
-//! - 示例页补上了 `#aetherupload-wrapper` 容器（组件在它内部找 `#aetherupload-resource`
-//!   等节点；PHP 的示例页一直有，本页早先漏了，导致示例页从来没跑到过预处理）。
+//!   与 `uploadChunk`、与各适配层同一种形态；适配层对 1.x 客户端的 urlencoded 请求照样收。
+//! - 示例页补上了 `#aetherupload-wrapper` 容器：组件在它内部找 `#aetherupload-resource`
+//!   等节点，漏掉容器会在浏览器里静默失败。
 
 /// 上传组件（含 zepto + spark-md5，单文件引入即可）。
 pub const SCRIPT: &str = include_str!("../assets/aetherupload-all.js");
@@ -50,8 +48,8 @@ mod tests {
         assert!(EXAMPLE_PAGE.contains(&config.route_uploading));
     }
 
-    /// 前端契约不许悄悄漂移（这条守卫的由来：`preprocess` 曾发 urlencoded 而适配层只收
-    /// multipart，示例页又缺组件要求的 wrapper —— 两个都不报错，只在浏览器里静默失败）。
+    /// 前端契约不许悄悄漂移：2.0 里 `preprocess` 固定发 multipart（urlencoded 只作 1.x
+    /// 兼容保留），示例页必须带组件要求的 wrapper —— 两处漂了都不报错，只在浏览器里静默失败。
     #[test]
     fn frontend_contract_stays_in_sync_with_the_adapters() {
         for (name, script) in [("all", SCRIPT), ("core", CORE_SCRIPT)] {
@@ -66,7 +64,7 @@ mod tests {
 
             assert!(
                 block.contains("new FormData()"),
-                "{name} 的 preprocess 应当用 FormData（urlencoded 会被只收 multipart 的适配层拒掉）"
+                "{name} 的 preprocess 应当用 FormData（multipart 是 2.0 的规范形态，urlencoded 只为 1.x 兼容保留）"
             );
             assert!(
                 block.contains("processData: false") && block.contains("contentType: false"),

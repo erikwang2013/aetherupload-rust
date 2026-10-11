@@ -6,16 +6,25 @@
 //! [`routes`] 返回的就是拼好的过滤器，交给 `warp::serve(routes)` 即可
 //! （用 `warp::test::request()` 测也一样）。
 //!
-//! 分块走 `warp::multipart::form()` 读进内存 —— 默认分块 1MB，比 PHP 落临时文件少一次
+//! 分块走 `warp::multipart::form()` 读进内存 —— 默认分块 1MB，比落临时文件少一次
 //! 磁盘往返；请求体上限按 `chunk_size` 放开（warp 的默认值是 2MB，可能与分块同量级，
 //! 见 [`crate::integrations::body_limit`]）。
+//!
+//! 响应形态（2.0 协议）：两个上传入口成功是 200 + `application/json`（snake_case
+//! 上传结果），失败是 RFC 9457 问题响应 —— 内核的 `Problem` 状态码与文案原样透出。
+//! 本适配器自己判定的失败也回同一形态：坏 multipart / 坏 urlencoded / 缺
+//! `Content-Type` → 400 `invalid_request_body`；定位到文件但打开失败 → 404
+//! `resource_not_found`。**框架层的拒绝没有例外**：`recover`（`handle_rejection`）
+//! 把这条链上所有 `Rejection` 都翻成问题响应 —— `content_length_limit` /
+//! `multipart::form().max_length()` 的 413 保持 413 `payload_too_large`，其余
+//! （`multipart` 过滤器的 content-type 判定等）一律 400 `invalid_request_body`。
 //!
 //! 本地文件下发用 [`warp::reply::stream`] + `tokio::fs::File` / `ReaderStream`：64KB
 //! 一分块、边读边发，整份文件不进内存，读盘走 `tokio::fs` 的阻塞线程池（不在 worker
 //! 上做同步 IO）。**没有用 `warp::fs::file`**：它的路径在过滤器构造期就固定，而这里
 //! 要下发的文件由请求里的 `saved_path` 运行时决定，warp 的 `Filter` 也不是 `Future`，
 //! 无法在 handler 里按运行时路径再构造一个文件过滤器。
-//! **不实现 HTTP Range** —— 与 PHP/webman 版一致，需要断点下载/视频拖动请开
+//! **不实现 HTTP Range** —— 与 1.x 一致，需要断点下载/视频拖动请开
 //! `x_accel_redirect` 交给前置服务器。
 //!
 //! ```no_run
@@ -44,7 +53,11 @@ use warp::reject::Rejection;
 use warp::{Buf, Reply, Stream};
 
 use crate::controller::{ChunkBody, ResourceController, ResourceResponse, UploadController};
-use crate::integrations::{FormData, body_limit, is_urlencoded};
+use crate::integrations::{
+    FormData, ParseFailure, body_limit, invalid_request_body_response, is_urlencoded, ok_response,
+    payload_too_large_response, problem_response, resource_not_found_response,
+};
+use crate::json::{save_chunk_ok_to_json, upload_ok_to_json};
 use crate::runtime::Runtime;
 
 /// 响应的统一类型：warp 的 `Response` 本身就是 `Reply`，四条路由的取出类型一致，
@@ -53,11 +66,13 @@ type Response = warp::reply::Response;
 
 /// 注册四条路由（路径取自配置的 `route_*`）。
 ///
-/// 返回 `impl Filter<Extract = (Response,), Error = Rejection> + Clone`，可直接
+/// 返回 `impl Filter<Extract = (Response,), Error = Infallible> + Clone`，可直接
 /// `warp::serve(...)`，也可与宿主自己的过滤器 `.or(...)` 组合（注意 `.unify()`）。
+/// 末尾的 `recover` 兜住这条链上所有拒绝点，统一成问题响应；宿主自己 `.or()` 进来
+/// 的过滤器若在**之后**被组合，拒绝就不再经过这里。
 pub fn routes(
     runtime: Arc<Runtime>,
-) -> impl Filter<Extract = (Response,), Error = Rejection> + Clone {
+) -> impl Filter<Extract = (Response,), Error = Infallible> + Clone {
     let limit = body_limit(&runtime);
     let preprocess_path = runtime.config().route_preprocess.clone();
     let uploading_path = runtime.config().route_uploading.clone();
@@ -73,13 +88,17 @@ pub fn routes(
         .unify()
         .or(download(runtime, &download_path))
         .unify()
+        .recover(handle_rejection)
+        // recover 的取出值被包成 `Either<正常路径, 恢复路径>`（warp 的私有类型），
+        // 两条携带的都是同一种响应：就地走 `Reply` 归约展平，对外保持 `(Response,)`
+        .map(|reply| reply.into_response())
 }
 
-/// 预处理：解析表单（urlencoded 或 multipart）→ 内核 `preprocess` → JSON 响应体。
+/// 预处理：解析表单（urlencoded 或 multipart）→ 内核 `preprocess` → 上传结果体。
 ///
-/// 前端脚本发的是 urlencoded，multipart 留给手工构造的请求 —— 两条分支各自成链、
-/// 用 `.or()` 合流：`content-type` 不是 urlencoded 时第一条拒绝（404，优先级最低，
-/// 不覆盖 multipart 分支的判定），落到第二条。
+/// 1.x 客户端发的是 urlencoded，multipart 留给自带脚本与手工构造的请求 —— 两条分支
+/// 各自成链、用 `.or()` 合流：`content-type` 不是 urlencoded 时第一条拒绝（404，
+/// 优先级最低，不覆盖 multipart 分支的判定），落到第二条。
 fn preprocess(
     runtime: Arc<Runtime>,
     path: &str,
@@ -97,10 +116,15 @@ fn preprocess(
             // （`warp::hyper` 又要 `server` feature）—— 同一个类型从 tokio-util 的转出里取
             |bytes: tokio_util::bytes::Bytes, runtime: Arc<Runtime>| async move {
                 let form = FormData::from_urlencoded(&String::from_utf8_lossy(&bytes));
-                let result =
-                    UploadController::new(runtime).preprocess(&form.to_preprocess_request());
 
-                Ok::<_, Rejection>(buffered(StatusCode::OK, Vec::new(), result.to_json()))
+                let triple = match UploadController::new(runtime)
+                    .preprocess(&form.to_preprocess_request())
+                {
+                    Ok(ok) => ok_response(upload_ok_to_json(&ok)),
+                    Err(problem) => problem_response(&problem),
+                };
+
+                Ok::<_, Rejection>(json_response(triple))
             },
         );
 
@@ -111,19 +135,19 @@ fn preprocess(
         .and(with_runtime(runtime))
         .and_then(
             |form: warp::multipart::FormData, runtime: Arc<Runtime>| async move {
-                // 解析失败按 400 回（与 axum 适配层同一处置），不走 reject
+                // 解析失败按坏体回问题响应（与 axum 适配层同一处置），不走 reject
                 let response = match parse_multipart(form).await {
                     Ok(form) => {
-                        let result = UploadController::new(runtime)
-                            .preprocess(&form.to_preprocess_request());
+                        let triple = match UploadController::new(runtime)
+                            .preprocess(&form.to_preprocess_request())
+                        {
+                            Ok(ok) => ok_response(upload_ok_to_json(&ok)),
+                            Err(problem) => problem_response(&problem),
+                        };
 
-                        buffered(StatusCode::OK, Vec::new(), result.to_json())
+                        json_response(triple)
                     }
-                    Err(_) => buffered(
-                        StatusCode::BAD_REQUEST,
-                        Vec::new(),
-                        "invalid multipart body".to_string(),
-                    ),
+                    Err(failure) => json_response(failure.response()),
                 };
 
                 Ok::<_, Rejection>(response)
@@ -147,7 +171,7 @@ fn urlencoded_content_type() -> impl Filter<Extract = (), Error = Rejection> + C
         .untuple_one()
 }
 
-/// 分块写入：解析 multipart → 内核 `saveChunk` → JSON 响应体。
+/// 分块写入：解析 multipart → 内核 `saveChunk` → 上传结果体。
 fn upload(
     runtime: Arc<Runtime>,
     path: &str,
@@ -162,16 +186,16 @@ fn upload(
             |form: warp::multipart::FormData, runtime: Arc<Runtime>| async move {
                 let response = match parse_multipart(form).await {
                     Ok(form) => {
-                        let result = UploadController::new(runtime)
-                            .save_chunk(&form.to_save_chunk_request());
+                        let triple = match UploadController::new(runtime)
+                            .save_chunk(&form.to_save_chunk_request())
+                        {
+                            Ok(ok) => ok_response(save_chunk_ok_to_json(&ok)),
+                            Err(problem) => problem_response(&problem),
+                        };
 
-                        buffered(StatusCode::OK, Vec::new(), result.to_json())
+                        json_response(triple)
                     }
-                    Err(_) => buffered(
-                        StatusCode::BAD_REQUEST,
-                        Vec::new(),
-                        "invalid multipart body".to_string(),
-                    ),
+                    Err(failure) => json_response(failure.response()),
                 };
 
                 Ok::<_, Rejection>(response)
@@ -216,14 +240,28 @@ fn download(
         )
 }
 
-/// 内核响应 → warp 响应。文件走分块流；文件打不开时按 404 回（与 axum 适配层一致）。
+/// 框架层拒绝 → 问题响应；这里没有拦不住的拒绝点。
+///
+/// `PayloadTooLarge`（`content_length_limit` / `multipart::form().max_length()`）保持
+/// 413，其余（content-type 不匹配、boundary 缺失、自定义 `warp::reject()`…）按
+/// 「请求体无法解析」回 400 `invalid_request_body`。
+async fn handle_rejection(err: Rejection) -> Result<Response, Infallible> {
+    let triple = if err.find::<warp::reject::PayloadTooLarge>().is_some() {
+        payload_too_large_response(None)
+    } else {
+        invalid_request_body_response(None)
+    };
+
+    Ok(json_response(triple))
+}
+
+/// 内核响应 → warp 响应。文件走分块流；文件打不开时按 404 问题响应回（与 axum 适配层一致）。
 pub async fn serve(response: ResourceResponse) -> Response {
     let headers = response.headers();
 
     match response {
-        ResourceResponse::NotFound(body) => {
-            buffered(StatusCode::NOT_FOUND, headers, body.to_string())
-        }
+        // 失败一律问题响应：状态码与文案原样来自内核
+        ResourceResponse::Problem(problem) => json_response(problem_response(&problem)),
 
         // Location / X-Accel-Redirect 都在内核的 headers() 里，体为空
         ResourceResponse::Redirect { .. } => buffered(StatusCode::FOUND, headers, String::new()),
@@ -238,7 +276,8 @@ pub async fn serve(response: ResourceResponse) -> Response {
             // 入口（`Body` 是私有类型），所以这里用 `tokio::fs` 打开后交给 `ReaderStream`
             // 造流：64KB 一读，整份文件不进内存。
             let Ok(file) = tokio::fs::File::open(&path).await else {
-                return buffered(StatusCode::NOT_FOUND, headers, "not found".to_string());
+                // 寻址已通过但打开失败：仍按 404 resource_not_found 回
+                return json_response(resource_not_found_response());
             };
 
             let stream = ReaderStream::with_capacity(file, 64 * 1024);
@@ -264,9 +303,12 @@ pub async fn serve(response: ResourceResponse) -> Response {
 
 /// 把 multipart 表单读成 [`FormData`]（分块字段读进内存）。
 ///
+/// 失败带着解析到一半的表单回来 —— 能取到 `locale` 就按它本地化问题标题。
+/// （超限走 `multipart::form().max_length` 的拒绝，不经这里，见 [`handle_rejection`]。）
+///
 /// 逐个字段迭代用 `std::future::poll_fn` 直接驱动 `Stream::poll_next` —— warp 只
 /// 转出了 `Stream` 这一个 trait，没有 `StreamExt`，这样不必额外引 futures-util。
-async fn parse_multipart(form: warp::multipart::FormData) -> Result<FormData, warp::Error> {
+async fn parse_multipart(form: warp::multipart::FormData) -> Result<FormData, ParseFailure> {
     let mut form = std::pin::pin!(form);
     let mut parsed = FormData::new();
 
@@ -274,7 +316,9 @@ async fn parse_multipart(form: warp::multipart::FormData) -> Result<FormData, wa
         let next = std::future::poll_fn(|cx| form.as_mut().poll_next(cx)).await;
 
         let Some(part) = next else { break };
-        let mut part = part?;
+        let Ok(mut part) = part else {
+            return Err(ParseFailure::new(parsed, false));
+        };
         let name = part.name().to_string();
 
         // 分块本体（文件字段）：字节读进内存；其余字段读成文本
@@ -282,7 +326,9 @@ async fn parse_multipart(form: warp::multipart::FormData) -> Result<FormData, wa
             let mut bytes = Vec::new();
 
             while let Some(chunk) = part.data().await {
-                let mut chunk = chunk?;
+                let Ok(mut chunk) = chunk else {
+                    return Err(ParseFailure::new(parsed, false));
+                };
                 let len = chunk.remaining();
                 bytes.extend_from_slice(&chunk.copy_to_bytes(len));
             }
@@ -292,7 +338,9 @@ async fn parse_multipart(form: warp::multipart::FormData) -> Result<FormData, wa
             let mut text = String::new();
 
             while let Some(chunk) = part.data().await {
-                let mut chunk = chunk?;
+                let Ok(mut chunk) = chunk else {
+                    return Err(ParseFailure::new(parsed, false));
+                };
                 let len = chunk.remaining();
                 text.push_str(&String::from_utf8_lossy(&chunk.copy_to_bytes(len)));
             }
@@ -322,7 +370,20 @@ fn with_runtime(
     warp::any().map(move || runtime.clone())
 }
 
-/// 内存体响应（JSON / 空体 / 错误文案）：状态 + 内核响应头。
+/// 三元组（状态码 + Content-Type + 体）→ warp 响应。
+fn json_response((status, content_type, body): (u16, &'static str, String)) -> Response {
+    let status = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let mut response = warp::reply::with_status(body, status).into_response();
+    set_header(
+        response.headers_mut(),
+        header::CONTENT_TYPE,
+        content_type,
+    );
+
+    response
+}
+
+/// 内存体响应（重定向 / 空体）：状态 + 内核响应头。
 fn buffered(status: StatusCode, headers: Vec<(String, String)>, body: String) -> Response {
     let mut response = warp::reply::with_status(body, status).into_response();
 
@@ -347,7 +408,7 @@ fn set_header(target: &mut HeaderMap, name: HeaderName, value: &str) {
     }
 }
 
-/// 由扩展名推断 Content-Type（走内核的 MIME 表，与 PHP 的文件响应同一张表）。
+/// 由扩展名推断 Content-Type（走内核的 MIME 表，与上传校验同一张）。
 fn content_type_for(path: &Path) -> Option<String> {
     let extension = path.extension()?.to_string_lossy().to_ascii_lowercase();
     let mime = crate::mime::mime_for_extension(&extension, &[]);
