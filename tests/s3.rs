@@ -1,10 +1,10 @@
 // Copyright (c) 2026 erik <erik@erik.xyz> — https://erik.xyz
 
-//! S3 驱动的端到端测试 —— 对应 PHP 版 `tests/S3StorageTest.php` + `S3ClientTest.php`。
+//! S3 驱动的端到端测试：真实 S3 协议面全部走替身传输，离线可跑。
 //!
 //! 两个替身传输：
 //! - [`ScriptedTransport`]：脚本化响应队列 + 原样记录请求（逐字节断言 URL / 方法序列 /
-//!   body 切片），与 PHP 的 `FakeS3Transport` 同语义；
+//!   body 切片），替身与真实客户端的请求形状一致；
 //! - [`MemoryS3`]：内存对象存储，真跑一遍 create → part → complete / abort 编排，
 //!   把「落地内容是否等于原文件」与「去重是否真的零上传」压成事实断言。
 //!
@@ -111,7 +111,7 @@ fn assert_signature_is_consistent(request: &HttpRequest) {
     );
 }
 
-/// 脚本化传输：响应队列 + 原样记录请求（对应 PHP 的 `FakeS3Transport`）。
+/// 脚本化传输：响应队列 + 原样记录请求。
 #[derive(Default)]
 struct ScriptedTransport {
     requests: Mutex<Vec<HttpRequest>>,
@@ -826,7 +826,7 @@ fn url_presigns_a_download_and_never_leaks_the_secret() {
     assert!(plain.contains("X-Amz-Credential=AKIDEXAMPLE%2F"), "{plain}");
     assert!(
         plain.contains("X-Amz-Expires=300"),
-        "默认有效期与 PHP 的 PRESIGN_TTL 一致"
+        "默认有效期应与 1.x 既有配置（300 秒）一致"
     );
     assert!(plain.contains("X-Amz-SignedHeaders=host"), "{plain}");
     assert!(!plain.contains(SECRET), "预签名 URL 不得泄漏 secret_key");

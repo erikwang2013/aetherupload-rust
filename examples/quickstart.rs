@@ -24,7 +24,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let base = std::env::current_dir()?;
     let runtime = Arc::new(Runtime::new(Config::default(), &base)?);
 
-    // 建上传根目录、_header 与各分组目录 —— 等价于 PHP 版的 `php webman aetherupload:groups`
+    // 建上传根目录、_header 与各分组目录 —— 1.x 部署里由 `aetherupload groups` 命令完成，
+    // 这里进程启动时跑一遍（内核建子目录是非递归 mkdir，分组目录必须先存在）
     let mut say = |line: &str| println!("{line}");
     if aetherupload::console::list_groups(&runtime, &mut say) != 0 {
         eprintln!("建目录失败，先修好再启动");

@@ -74,7 +74,14 @@ fn resource_response_to_http(response: ResourceResponse) -> Response {
     let mut headers: HashMap<String, String> = response.headers().into_iter().collect();
 
     let body = match response {
-        ResourceResponse::NotFound(text) => text.as_bytes().to_vec(),
+        // 问题响应：状态码原样 + problem+json 体（§11.5.3；1.x 这里是纯文本 404）
+        ResourceResponse::Problem(problem) => {
+            headers.insert(
+                "Content-Type".to_string(),
+                problem.content_type().to_string(),
+            );
+            problem.to_json().into_bytes()
+        }
         ResourceResponse::ServeFile {
             path,
             download_name,
@@ -140,6 +147,34 @@ fn text_form(fields: &[(&str, &str)]) -> FormData {
     FormData::from_pairs(fields.iter().map(|(k, v)| (k.to_string(), v.to_string())))
 }
 
+/// 断言响应是问题响应：状态码原样 + problem+json + 稳定 code + 非空 title。
+fn assert_problem(response: &Response, status: u16, code: &str) {
+    let body = String::from_utf8(response.body.clone()).unwrap();
+    assert_eq!(response.status, status, "{body}");
+
+    let content_type = response
+        .headers
+        .get("Content-Type")
+        .map(String::as_str)
+        .unwrap_or("");
+    assert!(
+        content_type.starts_with("application/problem+json"),
+        "问题响应必须带 problem+json：{content_type}"
+    );
+
+    assert_eq!(json_value(&body, "type"), Some("about:blank"), "{body}");
+    assert_eq!(
+        json_value(&body, "status"),
+        Some(status.to_string().as_str()),
+        "{body}"
+    );
+    assert_eq!(json_value(&body, "code"), Some(code), "{body}");
+    assert!(
+        !json_value(&body, "title").unwrap_or("").is_empty(),
+        "title 必须非空：{body}"
+    );
+}
+
 #[test]
 fn native_rust_full_flow() {
     let (base, guard) = project("flow");
@@ -163,14 +198,25 @@ fn native_rust_full_flow() {
     );
 
     assert_eq!(response.status, 200);
-    let body = String::from_utf8(response.body).unwrap();
-    assert_eq!(json_value(&body, "error"), Some("0"), "{body}");
+    assert!(
+        response
+            .headers
+            .get("Content-Type")
+            .map(String::as_str)
+            .unwrap_or("")
+            .starts_with("application/json"),
+        "成功体必须是 application/json"
+    );
 
-    let temp_base = json_value(&body, "resourceTempBaseName")
+    let body = String::from_utf8(response.body).unwrap();
+    assert_eq!(json_value(&body, "chunk_size"), Some("1000000"), "{body}");
+    assert_eq!(json_value(&body, "saved_path"), Some(""), "{body}");
+
+    let temp_base = json_value(&body, "resource_temp_base_name")
         .unwrap()
         .to_string();
-    let sub_dir = json_value(&body, "groupSubDir").unwrap().to_string();
-    let ext = json_value(&body, "resourceExt").unwrap().to_string();
+    let sub_dir = json_value(&body, "group_sub_dir").unwrap().to_string();
+    let ext = json_value(&body, "resource_ext").unwrap().to_string();
 
     // 2) 分块（按 13 字节切）
     let chunks: Vec<&[u8]> = content.chunks(13).collect();
@@ -199,17 +245,25 @@ fn native_rust_full_flow() {
             },
         );
 
-        assert_eq!(response.status, 200);
+        assert_eq!(response.status, 200, "第 {} 块不是 200", index + 1);
         last_body = String::from_utf8(response.body).unwrap();
-        assert_eq!(
-            json_value(&last_body, "error"),
-            Some("0"),
-            "第 {} 块失败：{last_body}",
-            index + 1
-        );
+
+        if index + 1 == total {
+            assert!(
+                !json_value(&last_body, "saved_path").unwrap_or("").is_empty(),
+                "末块必须给出 saved_path：{last_body}"
+            );
+        } else {
+            assert_eq!(
+                json_value(&last_body, "saved_path"),
+                Some(""),
+                "第 {} 块还没完成",
+                index + 1
+            );
+        }
     }
 
-    let saved_path = json_value(&last_body, "savedPath").unwrap().to_string();
+    let saved_path = json_value(&last_body, "saved_path").unwrap().to_string();
     assert!(!saved_path.is_empty(), "{last_body}");
 
     // 3) 成品落盘（内容逐字节一致）
@@ -266,7 +320,7 @@ fn native_rust_full_flow() {
 fn native_rust_rejects_bad_requests() {
     let (base, guard) = project("errors");
 
-    // 参数缺失：200 + JSON 错误（与 PHP 一致）
+    // 参数缺失 → 400 invalid_parameter（1.x 是 200 + error 字段）
     let response = serve(
         &guard,
         Request {
@@ -275,15 +329,45 @@ fn native_rust_rejects_bad_requests() {
             form: text_form(&[("resource_name", "x.txt")]),
         },
     );
+    assert_problem(&response, 400, "invalid_parameter");
 
-    assert_eq!(response.status, 200);
-    let body = String::from_utf8(response.body).unwrap();
-    assert!(
-        json_value(&body, "error").unwrap().starts_with("Error"),
-        "{body}"
+    // 未配置的分组 → 400 invalid_group
+    let response = serve(
+        &guard,
+        Request {
+            method: "POST",
+            path: "/aetherupload/preprocess".to_string(),
+            form: text_form(&[
+                ("resource_name", "x.txt"),
+                ("resource_size", "3"),
+                ("group", "nope"),
+            ]),
+        },
     );
+    assert_problem(&response, 400, "invalid_group");
 
-    // 目录穿越：savedPath 解码即拒
+    // 没预处理直接打分块 → 409 upload_not_prepared
+    let mut form = text_form(&[
+        ("chunk_total", "1"),
+        ("chunk_index", "1"),
+        ("resource_temp_basename", "0123456789abcdef"),
+        ("resource_ext", "txt"),
+        ("group_subdir", "202610"),
+        ("group", "file"),
+    ]);
+    form.push_file("resource_chunk", ChunkBody::Bytes(b"orphan".to_vec()));
+
+    let response = serve(
+        &guard,
+        Request {
+            method: "POST",
+            path: "/aetherupload/uploading".to_string(),
+            form,
+        },
+    );
+    assert_problem(&response, 409, "upload_not_prepared");
+
+    // 展示：saved_path 解码失败（目录穿越）→ 400 invalid_parameter（1.x 折成纯文本 404）
     let response = serve(
         &guard,
         Request {
@@ -292,9 +376,20 @@ fn native_rust_rejects_bad_requests() {
             form: FormData::new(),
         },
     );
-    assert_eq!(response.status, 404);
+    assert_problem(&response, 400, "invalid_parameter");
 
-    // 不属于四条路由的请求：交回宿主
+    // 展示：资源不存在 → 404 resource_not_found，同样是 problem+json
+    let response = serve(
+        &guard,
+        Request {
+            method: "GET",
+            path: "/aetherupload/display/file_202610_deadbeef.jpg".to_string(),
+            form: FormData::new(),
+        },
+    );
+    assert_problem(&response, 404, "resource_not_found");
+
+    // 不属于四条路由的请求：交回宿主（宿主自己的 404 不是内核的问题响应）
     let response = serve(
         &guard,
         Request {

@@ -1,13 +1,13 @@
 // Copyright (c) 2026 erik <erik@erik.xyz> — https://erik.xyz
 
-//! 随机化 + 边界回环测试：任意长度 × 任意切分 × 各种内容形态，走完整链路
-//! （预处理 → 逐块上传 → 末块落盘），逐字节核对成品。
+//! 随机化 + 边界回环测试：任意长度 × 任意合法切分（≤ 配置的 `chunk_size`）×
+//! 各种内容形态，走完整链路（预处理 → 逐块上传 → 末块落盘），逐字节核对成品。
 //!
 //! 随机化用自带的小 PRNG（splitmix64，零依赖），**固定种子**：失败信息里带
 //! 种子与参数（长度、切分、形态），照抄即可复现同一轮。
 //!
 //! 与 `tests/protocol.rs` 的分工：那边逐条核对协议语义（幂等 / 跳变 / 秒传 /
-//! 参数边界，固定切分）；这边只压「切法 × 内容」的组合面 —— 任何切法都不该
+//! 参数边界，固定切分）；这边只压「切法 × 内容」的组合面 —— 任何合法切法都不该
 //! 改变落盘的字节，也不该留下临时文件。
 //!
 //! 末块会按**真实内容**复核 MIME（魔数探测 → 反查扩展名 → 再走白名单），随机
@@ -22,12 +22,26 @@ use std::sync::Arc;
 
 use aetherupload::config::GroupConfig;
 use aetherupload::console;
-use aetherupload::json::{PreprocessResult, SaveChunkResult};
+use aetherupload::controller::{PreprocessOk, SaveChunkOk};
+use aetherupload::json::Problem;
 use aetherupload::md5::md5_hex;
 use aetherupload::{
     ChunkBody, Config, MemoryInstantStore, PreprocessRequest, Runtime, SaveChunkRequest,
     UploadController,
 };
+
+/// 取成功值；失败则带着问题响应与用例上下文报错。
+/// （不用 `unwrap()/expect()`：冻结稿没承诺 `Problem` / `*Ok` 实现 `Debug`。）
+fn expect_ok<T>(ctx: &str, result: Result<T, Problem>) -> T {
+    match result {
+        Ok(ok) => ok,
+        Err(problem) => panic!(
+            "{ctx}：调用失败：{} {}",
+            problem.status(),
+            problem.to_json()
+        ),
+    }
+}
 
 // ------------------------------------------------------------------ 自带的小 PRNG
 
@@ -137,11 +151,15 @@ impl Shape {
 
 // ------------------------------------------------------------------ 测试脚手架
 
+/// 配置里的分块大小：2.0 起单块长度不得超过它（§11.1，1.x 无此校验），
+/// 随机切分的上限就按它封顶；越界拒收另见 `tests/protocol.rs`。
+const CONFIG_CHUNK: usize = 1024;
+
 /// 「blob」分组的白名单留空（只受黑名单约束）：随机内容会被魔数探测判成
 /// bin / mp3 / txt / … 任意扩展名，白名单非空就会把回环测试变成白名单测试。
 fn roundtrip_config() -> Config {
     let mut config = Config {
-        chunk_size: 1024,
+        chunk_size: CONFIG_CHUNK as u64,
         ..Config::default()
     };
 
@@ -222,42 +240,46 @@ impl Harness {
             .clone()
     }
 
-    fn preprocess(&self, ctx: &str, group: &str, name: &str, content: &[u8]) -> PreprocessResult {
-        let pre = self.uploader().preprocess(&PreprocessRequest {
-            resource_name: Some(name.to_string()),
-            resource_size: Some(content.len().to_string()),
-            group: Some(group.to_string()),
-            resource_hash: Some(md5_hex(content)),
-            locale: Some("zh".into()),
-        });
-
-        assert_eq!(pre.error, None, "{ctx}：预处理失败：{:?}", pre.error);
-        pre
+    fn preprocess(&self, ctx: &str, group: &str, name: &str, content: &[u8]) -> PreprocessOk {
+        expect_ok(
+            ctx,
+            self.uploader().preprocess(&PreprocessRequest {
+                resource_name: Some(name.to_string()),
+                resource_size: Some(content.len().to_string()),
+                group: Some(group.to_string()),
+                resource_hash: Some(md5_hex(content)),
+                locale: Some("zh".into()),
+            }),
+        )
     }
 
     fn save_chunk(
         &self,
-        pre: &PreprocessResult,
+        ctx: &str,
+        pre: &PreprocessOk,
         group: &str,
         content: &[u8],
         index: usize,
         total: usize,
         body: &[u8],
-    ) -> SaveChunkResult {
-        self.uploader().save_chunk(&SaveChunkRequest {
-            chunk_total: Some(total.to_string()),
-            chunk_index: Some(index.to_string()),
-            resource_temp_basename: Some(pre.resource_temp_base_name.clone()),
-            resource_ext: Some(pre.resource_ext.clone()),
-            group_subdir: Some(pre.group_sub_dir.clone()),
-            group: Some(group.to_string()),
-            resource_hash: Some(md5_hex(content)),
-            locale: Some("zh".into()),
-            chunk: Some(ChunkBody::Bytes(body.to_vec())),
-        })
+    ) -> SaveChunkOk {
+        expect_ok(
+            &format!("{ctx}：第 {index}/{total} 块"),
+            self.uploader().save_chunk(&SaveChunkRequest {
+                chunk_total: Some(total.to_string()),
+                chunk_index: Some(index.to_string()),
+                resource_temp_basename: Some(pre.resource_temp_base_name.clone()),
+                resource_ext: Some(pre.resource_ext.clone()),
+                group_subdir: Some(pre.group_sub_dir.clone()),
+                group: Some(group.to_string()),
+                resource_hash: Some(md5_hex(content)),
+                locale: Some("zh".into()),
+                chunk: Some(ChunkBody::Bytes(body.to_vec())),
+            }),
+        )
     }
 
-    /// 完整链路：预处理 → 逐块上传 → 核对落盘。返回（预处理结果，末块响应）。
+    /// 完整链路：预处理 → 逐块上传 → 核对落盘。返回（预处理结果，末块成功体）。
     fn roundtrip(
         &self,
         ctx: &str,
@@ -265,32 +287,29 @@ impl Harness {
         name: &str,
         content: &[u8],
         chunk_size: usize,
-    ) -> (PreprocessResult, SaveChunkResult) {
+    ) -> (PreprocessOk, SaveChunkOk) {
         let pre = self.preprocess(ctx, group, name, content);
         assert!(
             pre.saved_path.is_empty(),
-            "{ctx}：非秒传场景预处理不应给出 savedPath"
+            "{ctx}：非秒传场景预处理不应给出 saved_path"
         );
 
         let chunks: Vec<&[u8]> = content.chunks(chunk_size).collect();
         let total = chunks.len();
-        let mut last = SaveChunkResult::default();
+        let mut last = SaveChunkOk {
+            saved_path: String::new(),
+        };
 
         for (offset, chunk) in chunks.iter().enumerate() {
             let index = offset + 1;
-            last = self.save_chunk(&pre, group, content, index, total, chunk);
-            assert_eq!(
-                last.error, None,
-                "{ctx}：第 {index}/{total} 块失败：{:?}",
-                last.error
-            );
+            last = self.save_chunk(ctx, &pre, group, content, index, total, chunk);
 
             if index == total {
-                assert!(!last.saved_path.is_empty(), "{ctx}：末块必须给出 savedPath");
+                assert!(!last.saved_path.is_empty(), "{ctx}：末块必须给出 saved_path");
             } else {
                 assert!(
                     last.saved_path.is_empty(),
-                    "{ctx}：第 {index}/{total} 中间块的 savedPath 必须为空"
+                    "{ctx}：第 {index}/{total} 中间块的 saved_path 必须为空"
                 );
             }
         }
@@ -305,15 +324,15 @@ impl Harness {
         &self,
         ctx: &str,
         group: &str,
-        pre: &PreprocessResult,
+        pre: &PreprocessOk,
         content: &[u8],
-        last: &SaveChunkResult,
+        last: &SaveChunkOk,
     ) {
         let name = format!("{}.{}", md5_hex(content), pre.resource_ext);
         assert_eq!(
             last.saved_path,
             format!("{group}_{}_{name}", pre.group_sub_dir),
-            "{ctx}：savedPath 应为三段式「分组_子目录_md5.ext」"
+            "{ctx}：saved_path 应为三段式「分组_子目录_md5.ext」"
         );
 
         let landed = self
@@ -377,9 +396,11 @@ fn random_lengths_and_splits_roundtrip() {
         let shape = *rng.pick(&SHAPES);
         let content = shape.build(&mut rng, len);
 
-        // 切分下限按「块数不超过协议的 10000 上限」兜底
+        // 切分下限按「块数不超过协议的 10000 上限」兜底，上限按配置的 chunk_size
+        // 封顶（2.0 起单块不得超过它）
         let floor = content.len().div_ceil(10_000).max(1) as u64;
-        let chunk_size = rng.range(floor, content.len() as u64 * 2) as usize;
+        let ceiling = (content.len() * 2).min(CONFIG_CHUNK) as u64;
+        let chunk_size = rng.range(floor, ceiling.max(floor)) as usize;
 
         let ctx = format!(
             "seed={SEED:#x} round={round} len={} chunk_size={chunk_size} shape={}",
@@ -454,7 +475,7 @@ fn content_shapes_roundtrip() {
     png.extend(Shape::Random.build(&mut rng, 3000));
     harness.roundtrip("shape=png", "file", "截图.png", &png, 1024);
 
-    // 重复内容 → 去重路径：两次上传给出同一个 savedPath，磁盘只留一份。
+    // 重复内容 → 去重路径：两次上传给出同一个 saved_path，磁盘只留一份。
     // 单独一套脚手架：这一轮要在「只装去重产物的目录」上数文件。
     let dedup = Harness::new("dedup");
     let duplicate = Shape::Binary.build(&mut rng, 4096);
@@ -464,7 +485,7 @@ fn content_shapes_roundtrip() {
     assert_eq!(first_pre.group_sub_dir, second_pre.group_sub_dir);
     assert_eq!(
         first_last.saved_path, second_last.saved_path,
-        "同内容同扩展名 → 同 savedPath（去重语义）"
+        "同内容同扩展名 → 同 saved_path（去重语义）"
     );
 
     let dir = dedup
@@ -530,7 +551,7 @@ fn instant_completion_hit_skips_every_chunk() {
         let hit = harness.preprocess(&ctx, "blob", "instant.bin", &content);
         assert_eq!(
             hit.saved_path, last.saved_path,
-            "{ctx}：秒传应命中同一 savedPath"
+            "{ctx}：秒传应命中同一 saved_path"
         );
         assert_eq!(hit.group_sub_dir, pre.group_sub_dir);
 
@@ -567,9 +588,11 @@ fn roundtrip_matrix() {
         let shape = *rng.pick(&SHAPES);
         let content = shape.build(&mut rng, len);
 
-        // 块数不能越过协议的 10000 上限（切分下限按此兜底）
+        // 块数不能越过协议的 10000 上限（切分下限按此兜底）；上限按配置的 chunk_size
+        // 封顶（2.0 起单块不得超过它）
         let floor = content.len().div_ceil(10_000).max(1) as u64;
-        let chunk_size = rng.range(floor, content.len() as u64 * 2) as usize;
+        let ceiling = (content.len() * 2).min(CONFIG_CHUNK) as u64;
+        let chunk_size = rng.range(floor, ceiling.max(floor)) as usize;
 
         let ctx = format!(
             "seed={SEED:#x} round={round} len={} chunk_size={chunk_size} shape={}",

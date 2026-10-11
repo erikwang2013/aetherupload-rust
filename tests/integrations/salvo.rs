@@ -122,7 +122,7 @@ async fn upload_display_download_roundtrip() {
     let preprocess_path = runtime.config().route_preprocess.clone();
     let uploading_path = runtime.config().route_uploading.clone();
 
-    // 分两块传，覆盖「中间块返回空 savedPath + 末块落盘」的分支
+    // 分两块传，覆盖「中间块返回空 saved_path + 末块落盘」的分支
     let content = b"hello aetherupload, chunked world!".to_vec();
     let (first, second) = content.split_at(11);
     let hash = md5_hex(&content);
@@ -139,14 +139,22 @@ async fn upload_display_download_roundtrip() {
     )
     .await;
     assert_eq!(response.status_code, Some(StatusCode::OK));
+    assert!(
+        response
+            .headers()
+            .get(CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("application/json"),
+        "成功体必须是 application/json"
+    );
 
     let json = response.take_string().await.unwrap();
-    assert_eq!(json_field(&json, "error"), "0", "预处理应当成功：{json}");
-
-    let chunk_size: u64 = json_field(&json, "chunkSize").parse().expect("chunkSize");
-    let temp_base_name = json_field(&json, "resourceTempBaseName");
-    let group_sub_dir = json_field(&json, "groupSubDir");
-    let resource_ext = json_field(&json, "resourceExt");
+    let chunk_size: u64 = json_field(&json, "chunk_size").parse().expect("chunk_size");
+    let temp_base_name = json_field(&json, "resource_temp_base_name");
+    let group_sub_dir = json_field(&json, "group_sub_dir");
+    let resource_ext = json_field(&json, "resource_ext");
 
     assert_eq!(chunk_size, 1_000_000);
     assert!(!temp_base_name.is_empty());
@@ -175,8 +183,11 @@ async fn upload_display_download_roundtrip() {
     assert_eq!(response.status_code, Some(StatusCode::OK));
 
     let json = response.take_string().await.unwrap();
-    assert_eq!(json_field(&json, "error"), "0", "首块应当成功：{json}");
-    assert_eq!(json_field(&json, "savedPath"), "", "非末块不返回 savedPath");
+    assert_eq!(
+        json_field(&json, "saved_path"),
+        "",
+        "非末块不返回 saved_path"
+    );
 
     let mut response = post(
         &router,
@@ -187,10 +198,9 @@ async fn upload_display_download_roundtrip() {
     assert_eq!(response.status_code, Some(StatusCode::OK));
 
     let json = response.take_string().await.unwrap();
-    assert_eq!(json_field(&json, "error"), "0", "末块应当成功：{json}");
 
-    let saved_path = json_field(&json, "savedPath");
-    assert!(!saved_path.is_empty(), "末块必须返回 savedPath");
+    let saved_path = json_field(&json, "saved_path");
+    assert!(!saved_path.is_empty(), "末块必须返回 saved_path");
     assert_eq!(saved_path, format!("file_{group_sub_dir}_{hash}.txt"));
 
     // 成品落在 <root>/storage/app/aetherupload/file/<subdir>/<md5>.txt，内容一字不差
@@ -248,33 +258,215 @@ async fn upload_display_download_roundtrip() {
     let served = response.take_bytes(None).await.unwrap();
     assert_eq!(served.as_ref(), content.as_slice());
 
-    // —— 5) 参数缺失 / 资源不存在 ——
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 失败路径矩阵：每个失败都必须是「正确状态码 + problem+json + 稳定 code」。
+#[tokio::test]
+async fn problem_responses_carry_the_2_0_shape() {
+    let (root, runtime) = setup("problems");
+    let router = Arc::new(routes(runtime.clone()));
+
+    let preprocess_path = runtime.config().route_preprocess.clone();
+    let uploading_path = runtime.config().route_uploading.clone();
+    let display_path = runtime.config().route_display.clone();
+
+    // 参数缺失 → 400 invalid_parameter（1.x 是 200 + error 字段）
+    let response = post(
+        &router,
+        &format!("{ORIGIN}{preprocess_path}"),
+        Multipart::new().text("resource_name", "x.txt"),
+    )
+    .await;
+    assert_problem(response, StatusCode::BAD_REQUEST, "invalid_parameter").await;
+
+    // 未配置的分组 → 400 invalid_group
+    let response = post(
+        &router,
+        &format!("{ORIGIN}{preprocess_path}"),
+        Multipart::new()
+            .text("resource_name", "x.txt")
+            .text("resource_size", "3")
+            .text("group", "nope"),
+    )
+    .await;
+    assert_problem(response, StatusCode::BAD_REQUEST, "invalid_group").await;
+
+    // 没预处理直接打分块 → 409 upload_not_prepared
+    let response = post(
+        &router,
+        &format!("{ORIGIN}{uploading_path}"),
+        chunk_form(1, 1, "0123456789abcdef", "202610", "", b"orphan"),
+    )
+    .await;
+    assert_problem(response, StatusCode::CONFLICT, "upload_not_prepared").await;
+
+    // 预处理后：跳号与重发已落块都是 409 chunk_out_of_order + expected_index
+    let content = b"0123456789abcdefghij"; // 20 字节 → 按 7 切成 3 块
+    let hash = md5_hex(content);
     let mut response = post(
         &router,
         &format!("{ORIGIN}{preprocess_path}"),
-        Multipart::new().text("group", "file"),
+        Multipart::new()
+            .text("resource_name", "seq.txt")
+            .text("resource_size", &content.len().to_string())
+            .text("group", "file")
+            .text("resource_hash", &hash),
     )
     .await;
     assert_eq!(response.status_code, Some(StatusCode::OK));
 
     let json = response.take_string().await.unwrap();
-    assert_ne!(
-        json_field(&json, "error"),
-        "0",
-        "缺必填字段应当报错：{json}"
-    );
+    let temp_base_name = json_field(&json, "resource_temp_base_name");
+    let group_sub_dir = json_field(&json, "group_sub_dir");
+    let chunks: Vec<&[u8]> = content.chunks(7).collect();
+    let total = chunks.len();
 
-    let response = get(
+    let response = post(
         &router,
-        &format!(
-            "{ORIGIN}{}/file_202610_missing.txt",
-            runtime.config().route_display
-        ),
+        &format!("{ORIGIN}{uploading_path}"),
+        chunk_form(1, total, &temp_base_name, &group_sub_dir, &hash, chunks[0]),
     )
     .await;
-    assert_eq!(response.status_code, Some(StatusCode::NOT_FOUND));
+    assert_eq!(response.status_code, Some(StatusCode::OK));
+
+    // 跳号（跳过第 2 块直接发第 3 块）→ expected_index 指回缺口
+    let response = post(
+        &router,
+        &format!("{ORIGIN}{uploading_path}"),
+        chunk_form(3, total, &temp_base_name, &group_sub_dir, &hash, chunks[2]),
+    )
+    .await;
+    assert_out_of_order(response, 2).await;
+
+    // 重发已落块（第 1 块）→ 同样 409，expected_index 不变
+    let response = post(
+        &router,
+        &format!("{ORIGIN}{uploading_path}"),
+        chunk_form(1, total, &temp_base_name, &group_sub_dir, &hash, chunks[0]),
+    )
+    .await;
+    assert_out_of_order(response, 2).await;
+
+    // 补齐缺口后照常完成：拒绝没有破坏已落进度
+    for index in 2..=total {
+        let mut response = post(
+            &router,
+            &format!("{ORIGIN}{uploading_path}"),
+            chunk_form(
+                index,
+                total,
+                &temp_base_name,
+                &group_sub_dir,
+                &hash,
+                chunks[index - 1],
+            ),
+        )
+        .await;
+        assert_eq!(response.status_code, Some(StatusCode::OK), "第 {index} 块");
+
+        if index == total {
+            let json = response.take_string().await.unwrap();
+            assert!(!json_field(&json, "saved_path").is_empty(), "{json}");
+        }
+    }
+
+    // 不存在的资源 → 404 resource_not_found（problem+json，不再是纯文本）
+    let response = get(&router, &format!("{ORIGIN}{display_path}/file_202610_missing.txt")).await;
+    assert_problem(response, StatusCode::NOT_FOUND, "resource_not_found").await;
+
+    // 两种编码都不认的 content-type：适配层自己的解析失败 → 400 invalid_request_body
+    let response = post_raw(
+        &router,
+        &format!("{ORIGIN}{preprocess_path}"),
+        "application/json",
+        b"{}".to_vec(),
+    )
+    .await;
+    assert_problem(response, StatusCode::BAD_REQUEST, "invalid_request_body").await;
+
+    // TODO(2.0 §11.4)：框架层 body 上限（= chunk_size + 1MB）被拒时的 413 payload_too_large
+    // 本层未覆盖 —— 需构造 >1MB 的 multipart 体并确认 salvo 的限额拒绝被 catcher 统一；
+    // axum 与 warp 两层已各钉一条。
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 组一条分块上传的 multipart 体（字段与完整链路一致）。
+fn chunk_form(
+    index: usize,
+    total: usize,
+    temp_base_name: &str,
+    group_sub_dir: &str,
+    hash: &str,
+    bytes: &[u8],
+) -> Multipart {
+    Multipart::new()
+        .text("chunk_total", &total.to_string())
+        .text("chunk_index", &index.to_string())
+        .text("resource_temp_basename", temp_base_name)
+        .text("resource_ext", "txt")
+        .text("group_subdir", group_sub_dir)
+        .text("group", "file")
+        .text("resource_hash", hash)
+        .file("resource_chunk", "chunk", bytes)
+}
+
+/// 发一条指定 Content-Type 的裸请求（给「两端都不认的编码」用）。
+async fn post_raw(
+    router: &Arc<Router>,
+    url: &str,
+    content_type: &str,
+    body: Vec<u8>,
+) -> salvo::Response {
+    TestClient::post(url)
+        .add_header(CONTENT_TYPE, content_type, true)
+        .body(body)
+        .send(router.clone())
+        .await
+}
+
+/// 断言一条问题响应：状态码原样 + problem+json + 稳定 code + 非空 title。
+/// 返回响应体，方便再断言 `expected_index` 之类的附加成员。
+async fn assert_problem(mut response: salvo::Response, status: StatusCode, code: &str) -> String {
+    assert_eq!(response.status_code, Some(status));
+
+    let content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        content_type.starts_with("application/problem+json"),
+        "问题响应必须带 problem+json：{content_type}"
+    );
+
+    let json = response.take_string().await.unwrap();
+    assert_eq!(json_field(&json, "type"), "about:blank", "{json}");
+    assert_eq!(
+        json_field(&json, "status"),
+        status.as_u16().to_string(),
+        "{json}"
+    );
+    assert_eq!(json_field(&json, "code"), code, "{json}");
+    assert!(
+        !json_field(&json, "title").is_empty(),
+        "title 必须非空：{json}"
+    );
+
+    json
+}
+
+/// 409 chunk_out_of_order：在问题响应基础上再断言 expected_index 指向缺口。
+async fn assert_out_of_order(response: salvo::Response, expected_index: usize) {
+    let json = assert_problem(response, StatusCode::CONFLICT, "chunk_out_of_order").await;
+    assert_eq!(
+        json_field(&json, "expected_index"),
+        expected_index.to_string(),
+        "{json}"
+    );
 }
 
 /// 前端脚本的 `preprocess` 发的是 urlencoded（zepto 对普通对象 `data` 的默认编码），
@@ -304,8 +496,8 @@ async fn urlencoded_preprocess_matches_the_bundled_frontend() {
     assert_eq!(response.status_code, Some(StatusCode::OK));
 
     let json = response.take_string().await.unwrap();
-    assert_eq!(json_field(&json, "error"), "0", "预处理失败：{json}");
-    assert_eq!(json_field(&json, "resourceExt"), "txt");
+    assert_eq!(json_field(&json, "chunk_size"), "1000000");
+    assert_eq!(json_field(&json, "resource_ext"), "txt");
 
     let _ = std::fs::remove_dir_all(&root);
 }

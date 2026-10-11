@@ -102,8 +102,13 @@ async fn post_multipart(
     path: &str,
     fields: &[(&str, &str)],
     chunk: Option<&[u8]>,
-) -> String {
-    let request = Request::builder()
+) -> (StatusCode, String, HeaderMap) {
+    send(app, multipart_request(path, fields, chunk)).await
+}
+
+/// 组一条 multipart POST 请求（不发送）。
+fn multipart_request(path: &str, fields: &[(&str, &str)], chunk: Option<&[u8]>) -> Request<Body> {
+    Request::builder()
         .method("POST")
         .uri(path)
         .header(
@@ -111,12 +116,69 @@ async fn post_multipart(
             format!("multipart/form-data; boundary={BOUNDARY}"),
         )
         .body(Body::from(multipart_body(fields, chunk)))
-        .unwrap();
+        .unwrap()
+}
 
-    let (status, body, _) = send(app, request).await;
-    assert_eq!(status, StatusCode::OK, "响应体: {body}");
+/// 组一条分块上传请求（字段与完整链路一致）。
+fn chunk_request(
+    index: usize,
+    total: usize,
+    temp_base_name: &str,
+    sub_dir: &str,
+    hash: &str,
+    chunk: &[u8],
+) -> Request<Body> {
+    multipart_request(
+        "/aetherupload/uploading",
+        &[
+            ("chunk_total", &total.to_string()),
+            ("chunk_index", &index.to_string()),
+            ("resource_temp_basename", temp_base_name),
+            ("resource_ext", "txt"),
+            ("group_subdir", sub_dir),
+            ("group", "file"),
+            ("resource_hash", hash),
+        ],
+        Some(chunk),
+    )
+}
+
+/// 断言一条问题响应：状态码原样 + problem+json + 稳定 code + 非空 title。
+/// 返回响应体，方便再断言 `expected_index` 之类的附加成员。
+async fn assert_problem(
+    app: &axum::Router,
+    request: Request<Body>,
+    status: StatusCode,
+    code: &str,
+) -> String {
+    let (actual, body, headers) = send(app, request).await;
+    assert_eq!(actual, status, "{body}");
+
+    let content_type = headers["content-type"].to_str().unwrap();
+    assert!(
+        content_type.starts_with("application/problem+json"),
+        "问题响应必须带 problem+json：{content_type}；{body}"
+    );
+    assert_eq!(json_field(&body, "type"), "about:blank", "{body}");
+    assert_eq!(
+        json_field(&body, "status"),
+        status.as_u16().to_string().as_str(),
+        "{body}"
+    );
+    assert_eq!(json_field(&body, "code"), code, "{body}");
+    assert!(!json_field(&body, "title").is_empty(), "title 必须非空：{body}");
 
     body
+}
+
+/// 409 chunk_out_of_order：在问题响应基础上再断言 expected_index 指向缺口。
+async fn assert_out_of_order(app: &axum::Router, request: Request<Body>, expected_index: usize) {
+    let body = assert_problem(app, request, StatusCode::CONFLICT, "chunk_out_of_order").await;
+    assert_eq!(
+        json_field(&body, "expected_index"),
+        expected_index.to_string().as_str(),
+        "{body}"
+    );
 }
 
 /// urlencoded 表单请求（前端脚本发 `preprocess` 的形态）。
@@ -160,7 +222,7 @@ async fn full_chain_through_bee_router() {
     let size = content.len().to_string();
 
     // 1) 预处理
-    let preprocess = post_multipart(
+    let (status, preprocess, headers) = post_multipart(
         &app,
         "/aetherupload/preprocess",
         &[
@@ -173,20 +235,24 @@ async fn full_chain_through_bee_router() {
     )
     .await;
 
-    assert_eq!(
-        json_field(&preprocess, "error"),
-        "0",
-        "预处理失败: {preprocess}"
+    assert_eq!(status, StatusCode::OK, "{preprocess}");
+    assert!(
+        headers["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("application/json"),
+        "成功体必须是 application/json"
     );
-    assert_eq!(json_field(&preprocess, "chunkSize"), "1000000");
-    assert_eq!(json_field(&preprocess, "resourceExt"), "txt");
+    assert_eq!(json_field(&preprocess, "chunk_size"), "1000000");
+    assert_eq!(json_field(&preprocess, "resource_ext"), "txt");
+    assert_eq!(json_field(&preprocess, "saved_path"), "", "{preprocess}");
 
-    let sub_dir = json_field(&preprocess, "groupSubDir").to_string();
-    let temp_base_name = json_field(&preprocess, "resourceTempBaseName").to_string();
+    let sub_dir = json_field(&preprocess, "group_sub_dir").to_string();
+    let temp_base_name = json_field(&preprocess, "resource_temp_base_name").to_string();
     assert!(!sub_dir.is_empty() && !temp_base_name.is_empty());
 
     // 2) 分块上传（内容不足一个 chunk：单块即末块）
-    let chunk = post_multipart(
+    let (status, chunk, _) = post_multipart(
         &app,
         "/aetherupload/uploading",
         &[
@@ -202,10 +268,10 @@ async fn full_chain_through_bee_router() {
     )
     .await;
 
-    assert_eq!(json_field(&chunk, "error"), "0", "分块失败: {chunk}");
+    assert_eq!(status, StatusCode::OK, "{chunk}");
 
-    let saved_path = json_field(&chunk, "savedPath").to_string();
-    assert!(!saved_path.is_empty(), "末块应当返回 savedPath: {chunk}");
+    let saved_path = json_field(&chunk, "saved_path").to_string();
+    assert!(!saved_path.is_empty(), "末块应当返回 saved_path: {chunk}");
 
     // 3) 落盘路径：<root>/storage/app/aetherupload/file/<subdir>/<md5>.txt
     let landed = root
@@ -261,8 +327,169 @@ async fn urlencoded_preprocess_matches_the_bundled_frontend() {
         StatusCode::OK,
         "urlencoded 的预处理必须被接受: {body}"
     );
-    assert_eq!(json_field(&body, "error"), "0", "预处理失败: {body}");
-    assert_eq!(json_field(&body, "resourceExt"), "txt");
+    assert_eq!(json_field(&body, "chunk_size"), "1000000");
+    assert_eq!(json_field(&body, "resource_ext"), "txt");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 失败路径矩阵：每个失败都必须是「正确状态码 + problem+json + 稳定 code」。
+#[tokio::test]
+async fn problem_responses_carry_the_2_0_shape() {
+    let root = temp_root("problems");
+    let runtime = Arc::new(Runtime::new(Config::default(), &root).unwrap());
+    prepare(&runtime);
+    let app = app(runtime);
+
+    // 参数缺失 → 400 invalid_parameter（1.x 是 200 + error 字段）
+    assert_problem(
+        &app,
+        multipart_request(
+            "/aetherupload/preprocess",
+            &[("resource_name", "x.txt")],
+            None,
+        ),
+        StatusCode::BAD_REQUEST,
+        "invalid_parameter",
+    )
+    .await;
+
+    // 未配置的分组 → 400 invalid_group
+    assert_problem(
+        &app,
+        multipart_request(
+            "/aetherupload/preprocess",
+            &[
+                ("resource_name", "x.txt"),
+                ("resource_size", "3"),
+                ("group", "nope"),
+            ],
+            None,
+        ),
+        StatusCode::BAD_REQUEST,
+        "invalid_group",
+    )
+    .await;
+
+    // 没预处理直接打分块 → 409 upload_not_prepared
+    assert_problem(
+        &app,
+        chunk_request(1, 1, "0123456789abcdef", "202610", "", b"orphan"),
+        StatusCode::CONFLICT,
+        "upload_not_prepared",
+    )
+    .await;
+
+    // 预处理后：跳号与重发已落块都是 409 chunk_out_of_order + expected_index
+    let content = b"0123456789abcdefghij"; // 20 字节 → 按 7 切成 3 块
+    let md5 = aetherupload::md5::md5_hex(content);
+    let (status, preprocess, _) = post_multipart(
+        &app,
+        "/aetherupload/preprocess",
+        &[
+            ("resource_name", "seq.txt"),
+            ("resource_size", &content.len().to_string()),
+            ("group", "file"),
+            ("resource_hash", &md5),
+        ],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{preprocess}");
+
+    let temp_base_name = json_field(&preprocess, "resource_temp_base_name").to_string();
+    let sub_dir = json_field(&preprocess, "group_sub_dir").to_string();
+    let chunks: Vec<&[u8]> = content.chunks(7).collect();
+    let total = chunks.len();
+
+    let (status, body, _) = post_multipart(
+        &app,
+        "/aetherupload/uploading",
+        &[
+            ("chunk_total", &total.to_string()),
+            ("chunk_index", "1"),
+            ("resource_temp_basename", &temp_base_name),
+            ("resource_ext", "txt"),
+            ("group_subdir", &sub_dir),
+            ("group", "file"),
+            ("resource_hash", &md5),
+        ],
+        Some(chunks[0]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // 跳号（跳过第 2 块直接发第 3 块）→ expected_index 指回缺口
+    assert_out_of_order(
+        &app,
+        chunk_request(3, total, &temp_base_name, &sub_dir, &md5, chunks[2]),
+        2,
+    )
+    .await;
+
+    // 重发已落块（第 1 块）→ 同样 409，expected_index 不变
+    assert_out_of_order(
+        &app,
+        chunk_request(1, total, &temp_base_name, &sub_dir, &md5, chunks[0]),
+        2,
+    )
+    .await;
+
+    // 补齐缺口后照常完成：拒绝没有破坏已落进度
+    for index in 2..=total {
+        let (status, body, _) = post_multipart(
+            &app,
+            "/aetherupload/uploading",
+            &[
+                ("chunk_total", &total.to_string()),
+                ("chunk_index", &index.to_string()),
+                ("resource_temp_basename", &temp_base_name),
+                ("resource_ext", "txt"),
+                ("group_subdir", &sub_dir),
+                ("group", "file"),
+                ("resource_hash", &md5),
+            ],
+            Some(chunks[index - 1]),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "第 {index} 块: {body}");
+
+        if index == total {
+            assert!(
+                !json_field(&body, "saved_path").is_empty(),
+                "{body}"
+            );
+        }
+    }
+
+    // 不存在的资源 → 404 resource_not_found（problem+json，不再是纯文本）
+    assert_problem(
+        &app,
+        Request::builder()
+            .uri("/aetherupload/display/file_202610_missing.txt")
+            .body(Body::empty())
+            .unwrap(),
+        StatusCode::NOT_FOUND,
+        "resource_not_found",
+    )
+    .await;
+
+    // 两种编码都不认的 content-type：适配层自己的解析失败 → 400 invalid_request_body
+    assert_problem(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/aetherupload/preprocess")
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap(),
+        StatusCode::BAD_REQUEST,
+        "invalid_request_body",
+    )
+    .await;
+
+    // 框架层 body 上限（= chunk_size + 1MB）的 413 payload_too_large 由 axum 适配层的
+    // catcher 统一，本层复用同一份路由 —— 已由 `integration_axum` 钉住（§11.4）。
 
     let _ = std::fs::remove_dir_all(&root);
 }

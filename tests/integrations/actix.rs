@@ -69,19 +69,24 @@ async fn upload_then_display_and_download() {
     .await;
 
     assert_eq!(resp.status(), StatusCode::OK);
-    let body = text(test::read_body(resp).await);
-    assert_eq!(json_field(&body, "error"), "0", "预处理应当成功：{body}");
-    assert_eq!(json_field(&body, "chunkSize"), CHUNK_SIZE.to_string());
-    assert_eq!(json_field(&body, "resourceExt"), "pdf");
+    assert!(
+        resp.headers().get(header::CONTENT_TYPE).unwrap().to_str().unwrap().starts_with("application/json"),
+        "成功体必须是 application/json"
+    );
 
-    let temp_base_name = json_field(&body, "resourceTempBaseName");
-    let group_sub_dir = json_field(&body, "groupSubDir");
+    let body = text(test::read_body(resp).await);
+    assert_eq!(json_field(&body, "chunk_size"), CHUNK_SIZE.to_string());
+    assert_eq!(json_field(&body, "resource_ext"), "pdf");
+    assert_eq!(json_field(&body, "saved_path"), "", "{body}");
+
+    let temp_base_name = json_field(&body, "resource_temp_base_name");
+    let group_sub_dir = json_field(&body, "group_sub_dir");
     assert!(
         !temp_base_name.is_empty() && !group_sub_dir.is_empty(),
         "临时名与子目录都要有：{body}"
     );
 
-    // —— 2) 逐块上传：末块才给 savedPath ——
+    // —— 2) 逐块上传：末块才给 saved_path ——
     let chunks: Vec<&[u8]> = content.chunks(CHUNK_SIZE as usize).collect();
     let chunk_total = chunks.len().to_string();
     assert_eq!(chunks.len(), 3, "700000 字节按 300000 切应当是三块");
@@ -112,12 +117,11 @@ async fn upload_then_display_and_download() {
 
         assert_eq!(resp.status(), StatusCode::OK);
         let body = text(test::read_body(resp).await);
-        assert_eq!(json_field(&body, "error"), "0", "第 {index} 块失败：{body}");
 
-        let path = json_field(&body, "savedPath");
+        let path = json_field(&body, "saved_path");
 
         if offset + 1 == chunks.len() {
-            assert!(!path.is_empty(), "末块必须给出 savedPath：{body}");
+            assert!(!path.is_empty(), "末块必须给出 saved_path：{body}");
             saved_path = path;
         } else {
             assert!(path.is_empty(), "非末块不该落盘：{body}");
@@ -222,10 +226,246 @@ async fn urlencoded_preprocess_matches_the_bundled_frontend() {
     );
 
     let body = text(test::read_body(resp).await);
-    assert_eq!(json_field(&body, "error"), "0", "预处理失败：{body}");
-    assert_eq!(json_field(&body, "resourceExt"), "txt");
+    assert_eq!(json_field(&body, "chunk_size"), "1000000");
+    assert_eq!(json_field(&body, "resource_ext"), "txt");
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 失败路径矩阵：每个失败都必须是「正确状态码 + problem+json + 稳定 code」。
+#[actix_web::test]
+async fn problem_responses_carry_the_2_0_shape() {
+    let root = std::env::temp_dir().join(format!(
+        "aetherupload-actix-problems-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+
+    let runtime = Arc::new(Runtime::new(Config::default(), &root).unwrap());
+
+    let mut lines = Vec::new();
+    assert_eq!(
+        aetherupload::console::list_groups(&runtime, &mut |line| lines.push(line.to_string())),
+        0,
+        "{lines:?}"
+    );
+
+    let app = test::init_service(App::new().service(routes(runtime))).await;
+
+    // 参数缺失 → 400 invalid_parameter（1.x 是 200 + error 字段）
+    let resp = test::call_service(
+        &app,
+        multipart_request(
+            "/aetherupload/preprocess",
+            &[("resource_name", "x.txt")],
+            None,
+        )
+        .to_request(),
+    )
+    .await;
+    assert_problem(resp, StatusCode::BAD_REQUEST, "invalid_parameter").await;
+
+    // 未配置的分组 → 400 invalid_group
+    let resp = test::call_service(
+        &app,
+        multipart_request(
+            "/aetherupload/preprocess",
+            &[
+                ("resource_name", "x.txt"),
+                ("resource_size", "3"),
+                ("group", "nope"),
+            ],
+            None,
+        )
+        .to_request(),
+    )
+    .await;
+    assert_problem(resp, StatusCode::BAD_REQUEST, "invalid_group").await;
+
+    // 没预处理直接打分块 → 409 upload_not_prepared
+    let resp = test::call_service(
+        &app,
+        chunk_request(1, 1, "0123456789abcdef", "202610", "", b"orphan").to_request(),
+    )
+    .await;
+    assert_problem(resp, StatusCode::CONFLICT, "upload_not_prepared").await;
+
+    // 预处理后：跳号与重发已落块都是 409 chunk_out_of_order + expected_index
+    let content = b"0123456789abcdefghij"; // 20 字节 → 按 7 切成 3 块
+    let hash = md5::md5_hex(content);
+    let resp = test::call_service(
+        &app,
+        preprocess_request("seq.txt", content.len(), &hash).to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = text(test::read_body(resp).await);
+    let temp_base_name = json_field(&body, "resource_temp_base_name");
+    let group_sub_dir = json_field(&body, "group_sub_dir");
+    let chunks: Vec<&[u8]> = content.chunks(7).collect();
+    let total = chunks.len();
+
+    let resp = test::call_service(
+        &app,
+        chunk_request(1, total, &temp_base_name, &group_sub_dir, &hash, chunks[0]).to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // 跳号（跳过第 2 块直接发第 3 块）→ expected_index 指回缺口
+    let resp = test::call_service(
+        &app,
+        chunk_request(3, total, &temp_base_name, &group_sub_dir, &hash, chunks[2]).to_request(),
+    )
+    .await;
+    assert_out_of_order(resp, 2).await;
+
+    // 重发已落块（第 1 块）→ 同样 409，expected_index 不变
+    let resp = test::call_service(
+        &app,
+        chunk_request(1, total, &temp_base_name, &group_sub_dir, &hash, chunks[0]).to_request(),
+    )
+    .await;
+    assert_out_of_order(resp, 2).await;
+
+    // 补齐缺口后照常完成：拒绝没有破坏已落进度
+    for index in 2..=total {
+        let resp = test::call_service(
+            &app,
+            chunk_request(
+                index,
+                total,
+                &temp_base_name,
+                &group_sub_dir,
+                &hash,
+                chunks[index - 1],
+            )
+            .to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK, "第 {index} 块");
+
+        if index == total {
+            let body = text(test::read_body(resp).await);
+            assert!(
+                !json_field(&body, "saved_path").is_empty(),
+                "{body}"
+            );
+        }
+    }
+
+    // 不存在的资源 → 404 resource_not_found（problem+json，不再是纯文本）
+    let resp = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/aetherupload/display/file_202610_missing.txt")
+            .to_request(),
+    )
+    .await;
+    assert_problem(resp, StatusCode::NOT_FOUND, "resource_not_found").await;
+
+    // 两种编码都不认的 content-type：适配层自己的解析失败 → 400 invalid_request_body
+    let resp = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/aetherupload/preprocess")
+            .insert_header((header::CONTENT_TYPE, "application/json"))
+            .set_payload("{}")
+            .to_request(),
+    )
+    .await;
+    assert_problem(resp, StatusCode::BAD_REQUEST, "invalid_request_body").await;
+
+    // TODO(2.0 §11.4)：框架层 body 上限（= chunk_size + 1MB）被拒时的 413 payload_too_large
+    // 本层未覆盖 —— 需构造 >1MB 的 multipart 体并确认 actix 的限额拒绝被 catcher 统一；
+    // axum 与 warp 两层已各钉一条。
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 拼一条预处理请求（multipart）。
+fn preprocess_request(name: &str, size: usize, hash: &str) -> test::TestRequest {
+    multipart_request(
+        "/aetherupload/preprocess",
+        &[
+            ("resource_name", name),
+            ("resource_size", &size.to_string()),
+            ("group", "file"),
+            ("resource_hash", hash),
+        ],
+        None,
+    )
+}
+
+/// 拼一条分块上传请求（字段与完整链路一致）。
+fn chunk_request(
+    index: usize,
+    total: usize,
+    temp_base_name: &str,
+    group_sub_dir: &str,
+    hash: &str,
+    chunk: &[u8],
+) -> test::TestRequest {
+    multipart_request(
+        "/aetherupload/uploading",
+        &[
+            ("chunk_total", &total.to_string()),
+            ("chunk_index", &index.to_string()),
+            ("resource_temp_basename", temp_base_name),
+            ("resource_ext", "txt"),
+            ("group_subdir", group_sub_dir),
+            ("group", "file"),
+            ("resource_hash", hash),
+        ],
+        Some(("resource_chunk", chunk)),
+    )
+}
+
+/// 断言一条问题响应：状态码原样 + problem+json + 稳定 code + 非空 title。
+/// 返回响应体，方便再断言 `expected_index` 之类的附加成员。
+async fn assert_problem<B>(
+    resp: actix_web::dev::ServiceResponse<B>,
+    status: StatusCode,
+    code: &str,
+) -> String
+where
+    B: actix_web::body::MessageBody,
+{
+    assert_eq!(resp.status(), status);
+
+    let content_type = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        content_type.starts_with("application/problem+json"),
+        "问题响应必须带 problem+json：{content_type}"
+    );
+
+    let body = text(test::read_body(resp).await);
+    assert_eq!(json_field(&body, "type"), "about:blank", "{body}");
+    assert_eq!(json_field(&body, "status"), status.as_u16().to_string(), "{body}");
+    assert_eq!(json_field(&body, "code"), code, "{body}");
+    assert!(!json_field(&body, "title").is_empty(), "title 必须非空：{body}");
+
+    body
+}
+
+/// 409 chunk_out_of_order：在问题响应基础上再断言 expected_index 指向缺口。
+async fn assert_out_of_order<B>(resp: actix_web::dev::ServiceResponse<B>, expected_index: usize)
+where
+    B: actix_web::body::MessageBody,
+{
+    let body = assert_problem(resp, StatusCode::CONFLICT, "chunk_out_of_order").await;
+    assert_eq!(
+        json_field(&body, "expected_index"),
+        expected_index.to_string(),
+        "{body}"
+    );
 }
 
 /// 一段带 `%PDF` 魔数的内容。

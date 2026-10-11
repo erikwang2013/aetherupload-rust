@@ -9,8 +9,9 @@
 //!    刚被删掉的子目录里（压 `create_group_sub_dir` 的「抢建失败后再查一次」）；
 //! 2. 同内容去重：N 个线程同时上传**完全相同的内容**（压 `LocalStorage::publish`
 //!    的「目标已存在 → 丢弃临时文件」），最终只落一份成品；
-//! 3. 断点竞争：同一 tempName 下并发**重发已收块**（幂等分支）、并发**首次同序号**
-//!    与并发**乱序补齐**（跳变被拒 → 客户端重传），内容必须恰好被追加一次。
+//! 3. 断点竞争：同一 tempName 下并发**重发已落块**（2.0 起是 409，安全拒绝且不动现场）、
+//!    并发**首次同序号**（一个写入、另一个 409 且 `expected_index > 本块`＝已落）与
+//!    并发**乱序补齐**（跳变被拒 → 客户端重传），内容必须恰好被追加一次。
 //!
 //! 子目录规则固定为 `Const`（= `"subdir"`，与 `protocol.rs` 的断言一致）：
 //! 所有线程必然落在同一个子目录里，也不依赖运行时刻。
@@ -25,12 +26,37 @@ use std::sync::{Arc, Barrier};
 use std::time::Duration;
 
 use aetherupload::console;
-use aetherupload::json::{PreprocessResult, SaveChunkResult};
+use aetherupload::controller::{PreprocessOk, SaveChunkOk};
+use aetherupload::json::Problem;
 use aetherupload::md5::md5_hex;
 use aetherupload::{
     ChunkBody, Config, MemoryInstantStore, PreprocessRequest, Runtime, SaveChunkRequest,
     SubdirRule, UploadController,
 };
+
+/// 问题响应的一句话描述（测试信息里带 status + code + title）。
+fn describe(problem: &Problem) -> String {
+    format!("{} {} {}", problem.status(), problem.code, problem.title)
+}
+
+/// 取扩成员 `expected_index`（`chunk_out_of_order` 必有）。
+fn expected_index(problem: &Problem) -> usize {
+    problem
+        .extra
+        .iter()
+        .find(|(key, _)| *key == "expected_index")
+        .and_then(|(_, value)| value.parse().ok())
+        .unwrap_or_else(|| panic!("chunk_out_of_order 必须带 expected_index：{}", problem.to_json()))
+}
+
+/// 线程外的准备步骤：成功就取出，失败就带问题响应 panic。
+/// （不用 `expect()`：冻结稿没承诺 `Problem` / `*Ok` 实现 `Debug`。）
+fn take_ok<T>(result: Result<T, Problem>, ctx: &str) -> T {
+    match result {
+        Ok(ok) => ok,
+        Err(problem) => panic!("{ctx}：{}", describe(&problem)),
+    }
+}
 
 /// 分块小、块数多，交错窗口才密。
 const CHUNK: usize = 256;
@@ -98,7 +124,7 @@ impl Harness {
     }
 
     /// 子目录里未改名的残留 `.part`。
-    fn part_path(&self, pre: &PreprocessResult) -> PathBuf {
+    fn part_path(&self, pre: &PreprocessOk) -> PathBuf {
         self.subdir().join(format!(
             "{}.{}.part",
             pre.resource_temp_base_name, pre.resource_ext
@@ -130,30 +156,25 @@ fn preprocess(
     group: &str,
     name: &str,
     content: &[u8],
-) -> Result<PreprocessResult, String> {
-    let pre = uploader.preprocess(&PreprocessRequest {
+) -> Result<PreprocessOk, Problem> {
+    uploader.preprocess(&PreprocessRequest {
         resource_name: Some(name.to_string()),
         resource_size: Some(content.len().to_string()),
         group: Some(group.to_string()),
         resource_hash: Some(md5_hex(content)),
         locale: Some("zh".into()),
-    });
-
-    match pre.error {
-        None => Ok(pre),
-        Some(error) => Err(format!("预处理失败：{error}")),
-    }
+    })
 }
 
 fn save_chunk(
     uploader: &UploadController,
-    pre: &PreprocessResult,
+    pre: &PreprocessOk,
     group: &str,
     hash: &str,
     index: usize,
     total: usize,
     body: &[u8],
-) -> SaveChunkResult {
+) -> Result<SaveChunkOk, Problem> {
     uploader.save_chunk(&SaveChunkRequest {
         chunk_total: Some(total.to_string()),
         chunk_index: Some(index.to_string()),
@@ -167,7 +188,7 @@ fn save_chunk(
     })
 }
 
-/// 完整链路，返回 `(savedPath, 错误)` —— 并发线程直接调用，不 panic。
+/// 完整链路，返回 `(saved_path, 失败描述)` —— 并发线程直接调用，不 panic。
 fn upload(
     uploader: &UploadController,
     group: &str,
@@ -176,15 +197,15 @@ fn upload(
 ) -> (String, Option<String>) {
     let pre = match preprocess(uploader, group, name, content) {
         Ok(pre) => pre,
-        Err(error) => return (String::new(), Some(error)),
+        Err(problem) => return (String::new(), Some(describe(&problem))),
     };
 
     let chunks: Vec<&[u8]> = content.chunks(CHUNK).collect();
     let total = chunks.len();
-    let mut last = SaveChunkResult::default();
+    let mut saved_path = String::new();
 
     for (offset, chunk) in chunks.iter().enumerate() {
-        last = save_chunk(
+        match save_chunk(
             uploader,
             &pre,
             group,
@@ -192,23 +213,35 @@ fn upload(
             offset + 1,
             total,
             chunk,
-        );
-
-        if let Some(error) = last.error.clone() {
-            return (
-                String::new(),
-                Some(format!("第 {}/{total} 块失败：{error}", offset + 1)),
-            );
+        ) {
+            Ok(ok) => saved_path = ok.saved_path,
+            Err(problem) => {
+                return (
+                    String::new(),
+                    Some(format!(
+                        "第 {}/{total} 块失败：{}",
+                        offset + 1,
+                        describe(&problem)
+                    )),
+                );
+            }
         }
     }
 
-    (last.saved_path, None)
+    (saved_path, None)
 }
 
-/// 重传直到被接受（「序号跳变」在缺块补上后自然消失）；未收敛则返回最后一条错误。
+/// 重传直到本块被接受（「序号跳变」在缺块补上后自然消失）；未收敛则返回最后一条问题。
+///
+/// 2.0 的分支按 §7 的口径：
+/// - 200 → 本块本次被写入；
+/// - 409 `chunk_out_of_order` 且 `expected_index > 本块` → 本块其实已落（对端线程写掉了），
+///   等价于成功；
+/// - 409 且 `expected_index <= 本块` → 缺的是前面的块（或就是本块），等对端补上后重传；
+/// - 其余失败（4xx 硬失败）→ 不再重试，直接报错。
 fn send_until_accepted(
     uploader: &UploadController,
-    pre: &PreprocessResult,
+    pre: &PreprocessOk,
     group: &str,
     hash: &str,
     index: usize,
@@ -218,12 +251,17 @@ fn send_until_accepted(
     let mut last = String::new();
 
     for _ in 0..500 {
-        match save_chunk(uploader, pre, group, hash, index, total, body).error {
-            None => return Ok(()),
-            Some(error) => {
-                last = error;
+        match save_chunk(uploader, pre, group, hash, index, total, body) {
+            Ok(_) => return Ok(()),
+            Err(problem) if problem.code == "chunk_out_of_order" => {
+                if expected_index(&problem) > index {
+                    return Ok(());
+                }
+
+                last = describe(&problem);
                 std::thread::sleep(Duration::from_millis(1));
             }
+            Err(problem) => return Err(describe(&problem)),
         }
     }
 
@@ -282,7 +320,7 @@ fn concurrent_uploads_into_a_fresh_subdir_all_land() {
             assert_eq!(
                 *saved_path,
                 format!("file_subdir_{name}"),
-                "round={round} worker={worker}：savedPath 应与成品一致"
+                "round={round} worker={worker}：saved_path 应与成品一致"
             );
 
             let landed = harness.subdir().join(&name);
@@ -346,7 +384,7 @@ fn concurrent_identical_uploads_dedupe_to_one_file() {
             assert_eq!(
                 *saved_path,
                 format!("file_subdir_{name}"),
-                "round={round} worker={worker}：同内容必须给出同一 savedPath"
+                "round={round} worker={worker}：同内容必须给出同一 saved_path"
             );
         }
 
@@ -365,7 +403,7 @@ fn concurrent_identical_uploads_dedupe_to_one_file() {
     }
 }
 
-// ------------------------------------------------------------------ 3a. 并发重发已收块
+// ------------------------------------------------------------------ 3a. 并发重发已落块
 
 #[test]
 fn concurrent_resend_of_a_received_chunk_never_appends_twice() {
@@ -379,19 +417,24 @@ fn concurrent_resend_of_a_received_chunk_never_appends_twice() {
 
         let content = format!("resend-round-{round}-").repeat(70).into_bytes();
         let hash = md5_hex(&content);
-        let pre = preprocess(&uploader, "file", "resend.txt", &content).expect("预处理应成功");
+        let pre = take_ok(
+            preprocess(&uploader, "file", "resend.txt", &content),
+            "预处理",
+        );
         assert!(pre.saved_path.is_empty(), "round={round}：预处理不该秒传");
 
         let chunks: Vec<&[u8]> = content.chunks(CHUNK).collect();
         let total = chunks.len();
         assert!(total >= 3, "round={round}：这轮至少要三块，实际 {total}");
 
-        // 单线程先发第 1 块：断点推到 1，之后的并发重发全部走幂等分支
+        // 单线程先发第 1 块：断点推到 1
         let first = save_chunk(&uploader, &pre, "file", &hash, 1, total, chunks[0]);
-        assert_eq!(first.error, None, "round={round}：第 1 块应被接收");
+        assert!(first.is_ok(), "round={round}：第 1 块应被接收");
 
+        // 并发重发已落块：2.0 起是 409 chunk_out_of_order（1.x 是静默 200），
+        // 且一个字节都不许动现场 —— 这正是「绝不重复追加」要守的东西
         let first_body = chunks[0];
-        let results: Vec<SaveChunkResult> = std::thread::scope(|scope| {
+        let results: Vec<Result<SaveChunkOk, Problem>> = std::thread::scope(|scope| {
             let handles: Vec<_> = (0..THREADS)
                 .map(|_| {
                     let uploader = &uploader;
@@ -413,35 +456,56 @@ fn concurrent_resend_of_a_received_chunk_never_appends_twice() {
         });
 
         for (worker, result) in results.iter().enumerate() {
-            assert_eq!(
-                result.error, None,
-                "round={round} worker={worker}：重发应幂等成功"
-            );
-            assert!(
-                result.saved_path.is_empty(),
-                "round={round} worker={worker}：中间块不应给出 savedPath"
-            );
+            match result {
+                Ok(_) => panic!("round={round} worker={worker}：重发已落块必须是 409"),
+                Err(problem) => {
+                    assert_eq!(
+                        problem.status(),
+                        409,
+                        "round={round} worker={worker}：{}",
+                        describe(problem)
+                    );
+                    assert_eq!(
+                        problem.code, "chunk_out_of_order",
+                        "round={round} worker={worker}：{}",
+                        describe(problem)
+                    );
+                    assert_eq!(
+                        expected_index(problem),
+                        2,
+                        "round={round} worker={worker}：预期的下一块应是 2"
+                    );
+                }
+            }
         }
+
+        // 拒绝归拒绝，进度必须原样保留（可恢复状态不许销毁数据），
+        // 且一个字节都不许多出来（重发被拒 ≠ 再追加一次）
+        assert_eq!(
+            std::fs::metadata(harness.part_path(&pre)).unwrap().len() as usize,
+            chunks[0].len(),
+            "round={round}：并发重发被拒后 `.part` 必须原样保留且只含第 1 块"
+        );
 
         // 补齐剩余块（末块落盘）：任何一次重复追加都会让整份 md5 对不上而失败
         for index in 2..=total {
-            let result = save_chunk(
-                &uploader,
-                &pre,
-                "file",
-                &hash,
-                index,
-                total,
-                chunks[index - 1],
-            );
-            assert_eq!(
-                result.error, None,
-                "round={round}：第 {index}/{total} 块失败：{:?}",
-                result.error
+            let ok = take_ok(
+                save_chunk(
+                    &uploader,
+                    &pre,
+                    "file",
+                    &hash,
+                    index,
+                    total,
+                    chunks[index - 1],
+                ),
+                &format!("round={round} 第 {index}/{total} 块"),
             );
 
             if index == total {
-                assert_eq!(result.saved_path, format!("file_subdir_{hash}.txt"));
+                assert_eq!(ok.saved_path, format!("file_subdir_{hash}.txt"));
+            } else {
+                assert!(ok.saved_path.is_empty(), "中间块不该给出 saved_path");
             }
         }
 
@@ -475,8 +539,9 @@ fn concurrent_resend_of_a_received_chunk_never_appends_twice() {
 /// 销毁那轮报错恒为「错误：读头文件失败」）。
 ///
 /// v1.0.2 已修：`Header::read` 改**共享锁**（`lock_shared()`，与 write 的排他锁互斥），
-/// 读者不再看得到截断窗口。这里按 [`RACE_ROUNDS`] 轮跑，把窗口压回概率里 ——
-/// 一旦回退到无锁读，本用例会以肉眼可见的频率重新变红。
+/// 读者不再看得到截断窗口。2.0 又把这条修复钉进协议：断点缺失/不可解析一律
+/// 409 `upload_not_prepared` 且**绝不 cleanup**（§11.1）。这里仍按 [`RACE_ROUNDS`]
+/// 轮跑，把窗口压回概率里 —— 一旦回退到无锁读，本用例会以肉眼可见的频率重新变红。
 #[test]
 fn concurrent_out_of_order_fill_converges() {
     let harness = Harness::new("out-of-order");
@@ -490,18 +555,18 @@ fn concurrent_out_of_order_fill_converges() {
             .repeat(40)
             .into_bytes();
         let hash = md5_hex(&content);
-        let pre = preprocess(&uploader, "file", "ooo.txt", &content).expect("预处理应成功");
+        let pre = take_ok(preprocess(&uploader, "file", "ooo.txt", &content), "预处理");
 
         let chunks: Vec<&[u8]> = content.chunks(CHUNK).collect();
         let total = chunks.len();
         assert_eq!(total, 4, "round={round}：这轮要恰好四块，实际 {total}");
 
         let first = save_chunk(&uploader, &pre, "file", &hash, 1, total, chunks[0]);
-        assert_eq!(first.error, None, "round={round}：第 1 块应被接收");
+        assert!(first.is_ok(), "round={round}：第 1 块应被接收");
 
         // 线程 A 发第 2 块、线程 B 发第 3 块，Barrier 起跑：B 可能先读到断点 1
-        // 而撞上「序号跳变」被拒 —— 真实客户端会重传，这里照做。
-        // 任何交错下收敛结果都必须是「每块恰好被追加一次」。
+        // 而撞上「序号跳变」被拒（2.0 起是 409 chunk_out_of_order）—— 真实客户端会
+        // 重传，这里照做。任何交错下收敛结果都必须是「每块恰好被追加一次」。
         std::thread::scope(|scope| {
             let a = scope.spawn(|| {
                 barrier.wait();
@@ -523,19 +588,17 @@ fn concurrent_out_of_order_fill_converges() {
             );
         });
 
-        let last = save_chunk(
-            &uploader,
-            &pre,
-            "file",
-            &hash,
-            total,
-            total,
-            chunks[total - 1],
-        );
-        assert_eq!(
-            last.error, None,
-            "round={round}：末块失败：{:?}",
-            last.error
+        let last = take_ok(
+            save_chunk(
+                &uploader,
+                &pre,
+                "file",
+                &hash,
+                total,
+                total,
+                chunks[total - 1],
+            ),
+            &format!("round={round} 末块"),
         );
         assert_eq!(last.saved_path, format!("file_subdir_{hash}.txt"));
 
@@ -569,7 +632,9 @@ fn concurrent_out_of_order_fill_converges() {
 /// 400 轮里 **298 轮（74.5%）上传被销毁**。
 ///
 /// v1.0.3 已修：`Header::lock_exclusive()` 的 RAII guard 把整段包进同一把排他锁
-/// （`save_chunk` 里同一临时名的分块写入串行化）。这里按 [`RACE_ROUNDS`] 轮跑。
+/// （`save_chunk` 里同一临时名的分块写入串行化）。2.0 下败者的答复从静默 200 变成
+/// 409 `chunk_out_of_order` 且 `expected_index > 本块`（＝本块已落，按 §7 静默推进），
+/// 这里按 [`RACE_ROUNDS`] 轮跑。
 #[test]
 fn concurrent_first_sends_of_the_same_chunk_never_double_append() {
     let harness = Harness::new("first-send");
@@ -581,7 +646,7 @@ fn concurrent_first_sends_of_the_same_chunk_never_double_append() {
 
         let content = format!("first-send-round-{round}-").repeat(40).into_bytes();
         let hash = md5_hex(&content);
-        let pre = preprocess(&uploader, "file", "first.txt", &content).expect("预处理应成功");
+        let pre = take_ok(preprocess(&uploader, "file", "first.txt", &content), "预处理");
         assert!(pre.saved_path.is_empty(), "round={round}：预处理不该秒传");
 
         let chunks: Vec<&[u8]> = content.chunks(CHUNK).collect();
@@ -590,7 +655,7 @@ fn concurrent_first_sends_of_the_same_chunk_never_double_append() {
 
         // 两个线程 Barrier 齐发第 1 块：此前谁都没收到过它（断点为 0）
         let first_body = chunks[0];
-        let results: Vec<SaveChunkResult> = std::thread::scope(|scope| {
+        let results: Vec<Result<SaveChunkOk, Problem>> = std::thread::scope(|scope| {
             let handles: Vec<_> = (0..2)
                 .map(|_| {
                     let uploader = &uploader;
@@ -611,37 +676,65 @@ fn concurrent_first_sends_of_the_same_chunk_never_double_append() {
                 .collect()
         });
 
+        // 恰好一个写入、另一个拿到「已经落了」的 409（排他锁把读断点→追加→回写
+        // 整段串行化），绝不允许两个都写、也不允许两个都拒
+        let mut wrote = 0;
         for (worker, result) in results.iter().enumerate() {
-            assert_eq!(
-                result.error, None,
-                "round={round} worker={worker}：首传并发应被安全吸收（写入或幂等跳过）：{:?}",
-                result.error
-            );
-            assert!(
-                result.saved_path.is_empty(),
-                "round={round} worker={worker}：第 1 块不是末块，不该给出 savedPath"
-            );
+            match result {
+                Ok(ok) => {
+                    wrote += 1;
+                    assert!(
+                        ok.saved_path.is_empty(),
+                        "round={round} worker={worker}：第 1 块不是末块，不该给出 saved_path"
+                    );
+                }
+                Err(problem) => {
+                    assert_eq!(
+                        problem.status(),
+                        409,
+                        "round={round} worker={worker}：{}",
+                        describe(problem)
+                    );
+                    assert_eq!(
+                        problem.code, "chunk_out_of_order",
+                        "round={round} worker={worker}：{}",
+                        describe(problem)
+                    );
+                    assert!(
+                        expected_index(problem) > 1,
+                        "round={round} worker={worker}：expected_index 应大于本块（＝本块已落）：{}",
+                        describe(problem)
+                    );
+                }
+            }
         }
+
+        assert_eq!(wrote, 1, "round={round}：并发首传必须恰好写入一次");
+
+        // 直接量 `.part`：重复追加会在这里现形（比等到末块校验更早、更明确）
+        assert_eq!(
+            std::fs::metadata(harness.part_path(&pre)).unwrap().len() as usize,
+            chunks[0].len(),
+            "round={round}：并发首传后 `.part` 必须恰好等于一块"
+        );
 
         // 补齐到末块：重复追加会让 `.part` 多出一块，末块的大小校验会在这里炸
         for index in 2..=total {
-            let result = save_chunk(
-                &uploader,
-                &pre,
-                "file",
-                &hash,
-                index,
-                total,
-                chunks[index - 1],
-            );
-            assert_eq!(
-                result.error, None,
-                "round={round}：第 {index}/{total} 块失败：{:?}",
-                result.error
+            let ok = take_ok(
+                save_chunk(
+                    &uploader,
+                    &pre,
+                    "file",
+                    &hash,
+                    index,
+                    total,
+                    chunks[index - 1],
+                ),
+                &format!("round={round} 第 {index}/{total} 块"),
             );
 
             if index == total {
-                assert_eq!(result.saved_path, format!("file_subdir_{hash}.txt"));
+                assert_eq!(ok.saved_path, format!("file_subdir_{hash}.txt"));
             }
         }
 
