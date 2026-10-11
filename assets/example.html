@@ -56,6 +56,27 @@
           setPreprocessRoute(...)  预处理路由（与配置 route_preprocess 一致）
           setUploadingRoute(...)   分块路由（与配置 route_uploading 一致）
           setLaxMode(...)          宽松模式：跳过 hash 计算，代价是没有秒传与完整性校验
+
+          协议 2.0：预处理和分块两个路由都收 multipart/form-data（组件用
+          FormData 发送，processData/contentType: false）。
+          预处理字段：resource_name、resource_size、resource_hash?、group、locale?
+          分块字段：resource_chunk（文件）、chunk_total、chunk_index、
+          resource_temp_basename、resource_ext、group_subdir、group、
+          resource_hash?、locale?
+          上传结果（HTTP 200，snake_case）：预处理回 chunk_size、
+          resource_temp_base_name、group_sub_dir、resource_ext、saved_path；
+          分块中间块回空 saved_path，末块落盘或秒传命中回完整 saved_path。
+          问题响应（RFC 9457，Content-Type: application/problem+json）：
+          type、title（按 locale 本地化的人类可读消息，组件直接显示给用户）、
+          status、code。常见状态码 / code：
+          400 invalid_parameter；400 invalid_group；409 upload_not_prepared；
+          409 chunk_out_of_order（扩成员 expected_index）；413 payload_too_large；
+          415 unsupported_media_type；422 hash_mismatch；500 internal_error；
+          display/download 失败：404 resource_not_found、400 invalid_parameter。
+          组件行为：4xx 是硬失败（显示 title 后退出，不再重试）；5xx 与网络错误
+          自动重试，同一分块连续失败 5 次后放弃并显示 title；chunk_out_of_order
+          按 expected_index 处理——大于本块序号=该块已落，静默推进；等于本块
+          序号=重发本块；小于本块序号=服务端状态已丢，显示 title 后失败退出。
         -->
         <input type="file" id="aetherupload-resource"
                onchange="aetherupload(this)

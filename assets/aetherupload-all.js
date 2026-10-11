@@ -192,26 +192,19 @@ var AetherUpload = {
 
             contentType: false,
 
-            success: function (rst) {
+            success: function (rst) { //上传结果（200）字段为 snake_case
 
-                if (rst.error) {
+                _this.resourceTempBaseName = rst.resource_temp_base_name;
 
-                    _this.outputDom.text(rst.error);
+                _this.resourceExt = rst.resource_ext;
 
-                    return;
-                }
-
-                _this.resourceTempBaseName = rst.resourceTempBaseName;
-
-                _this.resourceExt = rst.resourceExt;
-
-                _this.chunkSize = rst.chunkSize;
+                _this.chunkSize = rst.chunk_size;
 
                 _this.chunkCount = Math.ceil(_this.resourceSize / _this.chunkSize);
 
-                _this.groupSubDir = rst.groupSubDir;
+                _this.groupSubDir = rst.group_sub_dir;
 
-                if (rst.savedPath.length === 0) {
+                if (rst.saved_path.length === 0) {
 
                     _this.uploadChunk();
 
@@ -220,7 +213,7 @@ var AetherUpload = {
 
                     _this.progressBarDom.css('width', '100%');
 
-                    _this.savedPath = rst.savedPath;
+                    _this.savedPath = rst.saved_path;
 
                     _this.savedPathDom.val(_this.savedPath);
 
@@ -233,9 +226,9 @@ var AetherUpload = {
                 }
 
             },
-            error: function (XMLHttpRequest, textStatus, errorThrown) {
+            error: function (XMLHttpRequest, textStatus, errorThrown) { //失败响应是问题响应，title 已按 locale 本地化
 
-                _this.outputDom.text(_this.messages.error_upload_fail);
+                _this.outputDom.text(_this.parseProblem(XMLHttpRequest).title || _this.messages.error_upload_fail);
 
             }
 
@@ -295,7 +288,7 @@ var AetherUpload = {
 
             contentType: false,
 
-            success: function (rst) {
+            success: function (rst) { //上传结果（200）字段为 snake_case
 
                 if ((rst instanceof Object) !== true) {
 
@@ -304,13 +297,7 @@ var AetherUpload = {
                     return;
                 }
 
-                if (rst.error === 'undefined' || rst.error) {
-
-                    _this.outputDom.text(rst.error);
-
-                    return;
-
-                }
+                _this.retryCount = 0; //本块已被接受，连续失败计数清零
 
                 var percent = parseInt((_this.i + 1) / _this.chunkCount * 100);
 
@@ -318,9 +305,9 @@ var AetherUpload = {
 
                 _this.outputDom.text(_this.messages.status_uploading + ' ' + percent + '%');
 
-                if (rst.savedPath !== 'undefined' && rst.savedPath !== '') {
+                if (typeof rst.saved_path === 'string' && rst.saved_path !== '') {
 
-                    _this.savedPath = rst.savedPath;
+                    _this.savedPath = rst.saved_path;
 
                     _this.savedPathDom.val(_this.savedPath);
 
@@ -344,23 +331,115 @@ var AetherUpload = {
             },
             error: function (XMLHttpRequest, textStatus, errorThrown) {
 
-                if (XMLHttpRequest.status === 0) {
+                var problem = _this.parseProblem(XMLHttpRequest);
 
-                    _this.outputDom.text(_this.messages.status_retrying);
+                if (XMLHttpRequest.status === 409 && problem.code === 'chunk_out_of_order') {
 
-                    _this.sleep(5000);
+                    //序号冲突（409 chunk_out_of_order），服务端在问题响应里回 expected_index
 
-                    _this.uploadChunk();
+                    var expectedIndex = parseInt(problem.expected_index, 10);
+
+                    var currentIndex = _this.i + 1;
+
+                    if (expectedIndex > currentIndex) {
+
+                        //服务端已收到更靠后的块：本块早已落盘，静默推进
+
+                        _this.retryCount = 0;
+
+                        var percent = parseInt((_this.i + 1) / _this.chunkCount * 100);
+
+                        _this.progressBarDom.css('width', percent + '%');
+
+                        _this.outputDom.text(_this.messages.status_uploading + ' ' + percent + '%');
+
+                        ++_this.i;
+
+                        _this.uploadChunk();
+
+                    } else if (expectedIndex === currentIndex) {
+
+                        //服务端要的正是本块：重发本块，同样计入连续失败
+
+                        _this.retryCount = (_this.retryCount || 0) + 1;
+
+                        if (_this.retryCount >= 5) {
+
+                            //同一分块连续失败 5 次：不再重发，显示 title 后失败退出
+
+                            _this.outputDom.text(problem.title || _this.messages.error_upload_fail);
+
+                        } else {
+
+                            _this.uploadChunk();
+
+                        }
+
+                    } else {
+
+                        //服务端期望序号落后于本块：断点状态已丢，无法续传，失败退出
+
+                        _this.outputDom.text(problem.title || _this.messages.error_upload_fail);
+
+                    }
+
+                } else if (XMLHttpRequest.status === 0 || XMLHttpRequest.status >= 500) {
+
+                    //网络错误与服务端内部错误沿用既有重试语义
+
+                    _this.retryCount = (_this.retryCount || 0) + 1;
+
+                    if (_this.retryCount >= 5) {
+
+                        //同一分块连续失败 5 次：不再重试，显示 title 后失败退出
+
+                        _this.outputDom.text(problem.title || _this.messages.error_upload_fail);
+
+                    } else {
+
+                        _this.outputDom.text(_this.messages.status_retrying);
+
+                        _this.sleep(5000);
+
+                        _this.uploadChunk();
+
+                    }
 
                 } else {
 
-                    _this.outputDom.text(_this.messages.error_upload_fail);
+                    //4xx 硬失败：显示 title 后退出，不再重试
+
+                    _this.outputDom.text(problem.title || _this.messages.error_upload_fail);
 
                 }
             }
 
         });
 
+    },
+
+    parseProblem: function (XMLHttpRequest) { //解析问题响应（problem+json），解析不出就返回空对象
+
+        var problem = null;
+
+        if (XMLHttpRequest.responseJSON instanceof Object) {
+
+            problem = XMLHttpRequest.responseJSON;
+
+        } else if (typeof XMLHttpRequest.responseText === 'string') {
+
+            try {
+
+                problem = JSON.parse(XMLHttpRequest.responseText);
+
+            } catch (e) {
+
+                problem = null;
+
+            }
+        }
+
+        return problem instanceof Object ? problem : {};
     },
 
     sleep: function (milliSecond) {
