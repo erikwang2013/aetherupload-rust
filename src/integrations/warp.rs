@@ -44,7 +44,7 @@ use warp::reject::Rejection;
 use warp::{Buf, Reply, Stream};
 
 use crate::controller::{ChunkBody, ResourceController, ResourceResponse, UploadController};
-use crate::integrations::{FormData, body_limit};
+use crate::integrations::{FormData, body_limit, is_urlencoded};
 use crate::runtime::Runtime;
 
 /// 响应的统一类型：warp 的 `Response` 本身就是 `Reply`，四条路由的取出类型一致，
@@ -75,13 +75,36 @@ pub fn routes(
         .unify()
 }
 
-/// 预处理：解析 multipart → 内核 `preprocess` → JSON 响应体。
+/// 预处理：解析表单（urlencoded 或 multipart）→ 内核 `preprocess` → JSON 响应体。
+///
+/// 前端脚本发的是 urlencoded，multipart 留给手工构造的请求 —— 两条分支各自成链、
+/// 用 `.or()` 合流：`content-type` 不是 urlencoded 时第一条拒绝（404，优先级最低，
+/// 不覆盖 multipart 分支的判定），落到第二条。
 fn preprocess(
     runtime: Arc<Runtime>,
     path: &str,
     limit: usize,
 ) -> impl Filter<Extract = (Response,), Error = Rejection> + Clone + use<> {
-    warp::post()
+    let urlencoded = warp::post()
+        .and(path_prefix(path))
+        .and(warp::path::end())
+        .and(urlencoded_content_type())
+        .and(warp::body::content_length_limit(limit as u64))
+        .and(warp::body::bytes())
+        .and(with_runtime(runtime.clone()))
+        .and_then(
+            // `warp::body::bytes()` 给的是 `bytes::Bytes`，而 warp 只转出了 `bytes::Buf`
+            // （`warp::hyper` 又要 `server` feature）—— 同一个类型从 tokio-util 的转出里取
+            |bytes: tokio_util::bytes::Bytes, runtime: Arc<Runtime>| async move {
+                let form = FormData::from_urlencoded(&String::from_utf8_lossy(&bytes));
+                let result =
+                    UploadController::new(runtime).preprocess(&form.to_preprocess_request());
+
+                Ok::<_, Rejection>(buffered(StatusCode::OK, Vec::new(), result.to_json()))
+            },
+        );
+
+    let multipart = warp::post()
         .and(path_prefix(path))
         .and(warp::path::end())
         .and(warp::multipart::form().max_length(limit as u64))
@@ -105,7 +128,23 @@ fn preprocess(
 
                 Ok::<_, Rejection>(response)
             },
-        )
+        );
+
+    urlencoded.or(multipart).unify()
+}
+
+/// 只让 `application/x-www-form-urlencoded`（`; charset=…` 参数忽略）通过。
+///
+/// 用 404 拒绝：warp 合并两条分支的拒绝时以状态码取优先（404 最低），
+/// 于是「两边都不认」的请求仍按 multipart 分支原来的状态码回。
+fn urlencoded_content_type() -> impl Filter<Extract = (), Error = Rejection> + Clone {
+    warp::header::value("content-type")
+        .and_then(|value: HeaderValue| async move {
+            let matched = value.to_str().ok().is_some_and(is_urlencoded);
+
+            if matched { Ok(()) } else { Err(warp::reject()) }
+        })
+        .untuple_one()
 }
 
 /// 分块写入：解析 multipart → 内核 `saveChunk` → JSON 响应体。

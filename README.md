@@ -27,7 +27,7 @@
 
 **它的形状**
 
-一个 Rust crate，**内核与宿主框架解耦**：同一份代码在原生 Rust（`Guard` 请求守卫）与 Axum、Actix Web、Rocket、Poem、Salvo、Warp、bee-rust、e-cat 下可用。八条适配只做接线 —— 注册四条路由、把 multipart 表单翻译成入参、把内核响应翻译成框架响应；业务逻辑一行都不重复。不依赖数据库；Redis 只在开启秒传时才需要，且以 trait 注入，属可选依赖；S3 兼容存储同样是可选的 feature。
+一个 Rust crate，**内核与宿主框架解耦**：同一份代码在原生 Rust（`Guard` 请求守卫）与 Axum、Actix Web、Rocket、Poem、Salvo、Warp、bee-rust、e-cat 下可用。八条适配只做接线 —— 注册四条路由、把表单（urlencoded / multipart）翻译成入参、把内核响应翻译成框架响应；业务逻辑一行都不重复。不依赖数据库；Redis 只在开启秒传时才需要，且以 trait 注入，属可选依赖；S3 兼容存储同样是可选的 feature。
 
 **注意事项**
 
@@ -137,7 +137,7 @@ aetherupload-rust/
 
 | 层 | 职责 | 位置 |
 |----|------|------|
-| 框架适配层 | 只做接线：注册路由、解析 multipart、映射响应 | `src/integrations/` + `src/guard.rs` |
+| 框架适配层 | 只做接线：注册路由、解析表单（urlencoded / multipart）、映射响应 | `src/integrations/` + `src/guard.rs` |
 | 用例层 | 两个入口：上传（预处理 + 分块）与读取（展示 + 下载） | `src/controller/` |
 | 领域层 | 分块文件、断点、成品、寻址、MIME、配置快照 | `src/{partial,header,resource,saved_path,mime,config}.rs` |
 | 端口层 | 存储 / 秒传 / 事件 / MIME 探测器四个 trait 与默认实现 | `src/{storage,instant,events,mime}.rs` |
@@ -168,6 +168,8 @@ aetherupload-rust/
 | `route_download`（默认 `/aetherupload/download/{saved_path}/{new_name}`） | GET | `ResourceController::download` | 同上，且强制附件 |
 
 上传接口的错误一律 **HTTP 200 + `error` 字段**（与 PHP 版一致，前端按 `error` 真值判断）；读路径的失败是 404 文本（`display fail` / `download fail`）。
+
+`route_preprocess` 的表单编码两种都收：**urlencoded**（前端脚本 `aetherupload-all.js` 用 zepto 的默认编码发它）与 **multipart**（手工构造的请求），与 PHP 的 `request()->input()` 同宽 —— 解出来的字段名一样，重名取最后一个。`route_uploading` 一定带文件字段，只收 multipart。
 
 ## 上传生命周期
 
@@ -259,7 +261,7 @@ match guard.routes().classify(method, path) {
 }
 ```
 
-表单字段用 `FormData::from_pairs(...)`（文本字段）+ `push_file("resource_chunk", ChunkBody::Bytes(..))` 组装 —— 重名取最后一个，与 PHP 解析表单的语义一致。
+表单字段用 `FormData::from_pairs(...)`（文本字段）+ `push_file("resource_chunk", ChunkBody::Bytes(..))` 组装 —— 重名取最后一个，与 PHP 解析表单的语义一致。若自己的服务器只拿到 `application/x-www-form-urlencoded` 的原始串（前端脚本的 `preprocess` 就是这样），直接喂 `FormData::from_urlencoded(...)`，不必自己解 percent 编码。
 
 `ResourceResponse` 的三种形态（`Redirect` / `AccelRedirect` / `ServeFile`）各自带好 `status()` 与 `headers()`；`ServeFile` 的附件名在 `download_name` 里，附件头用 `aetherupload::controller::attachment_disposition(name)` 生成（八个适配器也是这么做的）—— 完整示例见 `tests/guard.rs` 里的 `resource_response_to_http()`。
 

@@ -19,6 +19,10 @@
 //!
 //! 前端字段名与 PHP 版一致（`resource_name` / `resource_chunk` / `chunk_index` …），
 //! 因此 PHP 版的前端脚本 `aetherupload-all.js` 不用改一行就能对着 Rust 端跑。
+//!
+//! 表单编码同样照 PHP 的收法：`preprocess` 同时吃 urlencoded 与 multipart
+//! （前端脚本用 zepto 的默认编码 urlencoded 发它，分块上传才是 multipart），
+//! 两种都翻成同一个 [`FormData`]；分块路由只可能是 multipart。
 
 #[cfg(feature = "actix")]
 pub mod actix;
@@ -46,6 +50,19 @@ pub use crate::form::FormData;
 /// 不放开的话第一个分块就会被框架自己拒掉。适配器用这个值设置路由的 body 限制。
 pub fn body_limit(runtime: &crate::runtime::Runtime) -> usize {
     (runtime.config().chunk_size as usize).saturating_add(1_048_576)
+}
+
+/// `Content-Type` 是否是 urlencoded 表单（`; charset=…` 这类参数忽略）。
+///
+/// `preprocess` 要按它分流：前端脚本（zepto / jQuery 的默认编码）发 urlencoded，
+/// 手工构造或第三方客户端发 multipart（分块上传则一律是 multipart）。
+pub fn is_urlencoded(content_type: &str) -> bool {
+    content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .eq_ignore_ascii_case("application/x-www-form-urlencoded")
 }
 
 /// 路径模板：`/aetherupload/display/{saved_path}`。

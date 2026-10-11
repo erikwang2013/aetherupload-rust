@@ -5,6 +5,10 @@
 //! 分块走 `Multipart` 提取器读进内存 —— 默认分块 1MB，比 PHP 落临时文件少一次
 //! 磁盘往返；把 `chunk_size` 调得很大时请自行换流式解析。
 //!
+//! `preprocess` 的两种表单编码都收：urlencoded（前端脚本 zepto 的默认编码）与
+//! multipart（手工构造的请求），与 PHP 的 `request()->input()` 同宽；两条分支都受
+//! 下一节的 `SizeLimit` 建议约束。
+//!
 //! 本地文件下发用流式响应（`tokio::fs` + `ReaderStream`），不把整份文件读进内存；
 //! **不实现 HTTP Range** —— 与 PHP/webman 版一致，需要断点下载/视频拖动请开
 //! `x_accel_redirect` 交给前置服务器。
@@ -40,12 +44,12 @@
 use std::sync::Arc;
 
 use poem::http::{StatusCode, header};
-use poem::web::{Data, Multipart, Path};
-use poem::{Body, EndpointExt, Response, Route, get, handler, post};
+use poem::web::{Data, Multipart, Path, RequestBody};
+use poem::{Body, EndpointExt, FromRequest, Request, Response, Route, get, handler, post};
 use tokio_util::io::ReaderStream;
 
 use crate::controller::{ChunkBody, ResourceController, ResourceResponse, UploadController};
-use crate::integrations::{FormData, display_route, download_route};
+use crate::integrations::{FormData, display_route, download_route, is_urlencoded};
 use crate::runtime::Runtime;
 
 /// 注册四条路由（路径取自配置的 `route_*`）。
@@ -65,9 +69,29 @@ pub fn routes(runtime: Arc<Runtime>) -> Route {
 }
 
 #[handler]
-async fn preprocess(Data(runtime): Data<&Arc<Runtime>>, multipart: Multipart) -> Response {
-    let Ok(form) = parse_multipart(multipart).await else {
-        return bad_request("invalid multipart body");
+async fn preprocess(Data(runtime): Data<&Arc<Runtime>>, req: &Request, body: Body) -> Response {
+    // 按 `Content-Type` 分流：前端脚本发 urlencoded，手工构造的请求发 multipart
+    let urlencoded = req
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(is_urlencoded);
+
+    let form = if urlencoded {
+        match body.into_vec().await {
+            Ok(bytes) => FormData::from_urlencoded(&String::from_utf8_lossy(&bytes)),
+            Err(_) => return bad_request("invalid urlencoded body"),
+        }
+    } else {
+        let mut body = RequestBody::new(body);
+
+        match Multipart::from_request(req, &mut body).await {
+            Ok(multipart) => match parse_multipart(multipart).await {
+                Ok(form) => form,
+                Err(_) => return bad_request("invalid multipart body"),
+            },
+            Err(_) => return bad_request("invalid multipart body"),
+        }
     };
 
     let result = UploadController::new(runtime.clone()).preprocess(&form.to_preprocess_request());

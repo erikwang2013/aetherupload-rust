@@ -27,7 +27,7 @@ Uploading a large file straight from the browser runs into three problems: anyth
 
 **Its shape**
 
-One Rust crate, with the **kernel decoupled from the host framework**: the same code works on native Rust (the `Guard` request guard) and on Axum, Actix Web, Rocket, Poem, Salvo, Warp, bee-rust, and e-cat. The eight adapters only do wiring — register four routes, translate the multipart form into kernel arguments, translate the kernel response into a framework response. Not one line of business logic is duplicated. No database dependency; Redis is needed only when instant upload is enabled, and it is injected through a trait, making it an optional dependency; S3-compatible storage is likewise an optional feature.
+One Rust crate, with the **kernel decoupled from the host framework**: the same code works on native Rust (the `Guard` request guard) and on Axum, Actix Web, Rocket, Poem, Salvo, Warp, bee-rust, and e-cat. The eight adapters only do wiring — register four routes, translate the form (urlencoded / multipart) into kernel arguments, translate the kernel response into a framework response. Not one line of business logic is duplicated. No database dependency; Redis is needed only when instant upload is enabled, and it is injected through a trait, making it an optional dependency; S3-compatible storage is likewise an optional feature.
 
 **Notes**
 
@@ -137,7 +137,7 @@ aetherupload-rust/
 
 | Layer | Responsibility | Location |
 |----|------|------|
-| Framework adapter layer | Wiring only: register routes, parse multipart, map responses | `src/integrations/` + `src/guard.rs` |
+| Framework adapter layer | Wiring only: register routes, parse the form (urlencoded / multipart), map responses | `src/integrations/` + `src/guard.rs` |
 | Use-case layer | Two entry points: upload (preprocess + chunk) and read (display + download) | `src/controller/` |
 | Domain layer | Chunk files, checkpoints, finished resources, addressing, MIME, config snapshots | `src/{partial,header,resource,saved_path,mime,config}.rs` |
 | Port layer | The four traits — storage / instant upload / events / MIME detector — and their default implementations | `src/{storage,instant,events,mime}.rs` |
@@ -168,6 +168,8 @@ Four routes, two response shapes:
 | `route_download` (default `/aetherupload/download/{saved_path}/{new_name}`) | GET | `ResourceController::download` | same, forced as an attachment |
 
 Errors on the upload endpoints are always **HTTP 200 with an `error` field** (matching the PHP version; the frontend tests `error` for truthiness); read-path failures are 404 plain text (`display fail` / `download fail`).
+
+`route_preprocess` accepts both form encodings: **urlencoded** (what the bundled `aetherupload-all.js` sends — zepto's default for a plain object) and **multipart** (hand-built requests), as wide as PHP's `request()->input()` — same field names either way, duplicates take the last one. `route_uploading` always carries a file field, so it takes multipart only.
 
 ## Upload lifecycle
 
@@ -259,7 +261,7 @@ match guard.routes().classify(method, path) {
 }
 ```
 
-Form fields are assembled with `FormData::from_pairs(...)` (text fields) plus `push_file("resource_chunk", ChunkBody::Bytes(..))` — duplicate names take the last one, matching how PHP parses forms.
+Form fields are assembled with `FormData::from_pairs(...)` (text fields) plus `push_file("resource_chunk", ChunkBody::Bytes(..))` — duplicate names take the last one, matching how PHP parses forms. If your own server only has the raw `application/x-www-form-urlencoded` string (which is what the frontend script's `preprocess` sends), feed it straight to `FormData::from_urlencoded(...)` instead of percent-decoding it yourself.
 
 The three shapes of `ResourceResponse` (`Redirect` / `AccelRedirect` / `ServeFile`) each carry their own `status()` and `headers()`; `ServeFile`'s attachment name lives in `download_name`, and the attachment header is produced by `aetherupload::controller::attachment_disposition(name)` (the eight adapters do the same) — for a complete example see `resource_response_to_http()` in `tests/guard.rs`.
 

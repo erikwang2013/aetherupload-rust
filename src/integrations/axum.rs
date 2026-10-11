@@ -5,6 +5,9 @@
 //! 分块走 `Multipart` 提取器读进内存 —— 默认分块 1MB，比 PHP 落临时文件少一次
 //! 磁盘往返；把 `chunk_size` 调得很大时请自行换流式解析。
 //!
+//! `preprocess` 的两种表单编码都收：urlencoded（前端脚本 zepto 的默认编码）与
+//! multipart（手工构造的请求），与 PHP 的 `request()->input()` 同宽。
+//!
 //! 本地文件下发用流式响应（`tokio::fs` + `ReaderStream`），不把整份文件读进内存；
 //! **不实现 HTTP Range** —— 与 PHP/webman 版一致，需要断点下载/视频拖动请开
 //! `x_accel_redirect` 交给前置服务器。
@@ -23,14 +26,14 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
+use axum::extract::{DefaultBodyLimit, FromRequest, Multipart, Path, Request, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use tokio_util::io::ReaderStream;
 
 use crate::controller::{ChunkBody, ResourceController, ResourceResponse, UploadController};
-use crate::integrations::{FormData, body_limit, display_route, download_route};
+use crate::integrations::{FormData, body_limit, display_route, download_route, is_urlencoded};
 use crate::runtime::Runtime;
 
 /// 注册四条路由（路径取自配置的 `route_*`）。
@@ -51,9 +54,10 @@ pub fn routes(runtime: Arc<Runtime>) -> Router {
         .with_state(runtime)
 }
 
-async fn preprocess(State(runtime): State<Arc<Runtime>>, multipart: Multipart) -> Response {
-    let Ok(form) = parse_multipart(multipart).await else {
-        return (StatusCode::BAD_REQUEST, "invalid multipart body").into_response();
+async fn preprocess(State(runtime): State<Arc<Runtime>>, request: Request) -> Response {
+    let form = match parse_form(&runtime, request).await {
+        Ok(form) => form,
+        Err(message) => return (StatusCode::BAD_REQUEST, message).into_response(),
     };
 
     let result = UploadController::new(runtime).preprocess(&form.to_preprocess_request());
@@ -84,6 +88,32 @@ async fn download(
     let response = ResourceController::new(runtime).download(&saved_path, &new_name);
 
     serve(response).await
+}
+
+/// 解析 `preprocess` 的表单：按 `Content-Type` 分流，urlencoded 与 multipart 都收
+/// —— 与 PHP 的 `request()->input()` 一致（前端脚本发的正是 urlencoded）。
+async fn parse_form(runtime: &Runtime, request: Request) -> Result<FormData, &'static str> {
+    let urlencoded = request
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(is_urlencoded);
+
+    if !urlencoded {
+        let Ok(multipart) = Multipart::from_request(request, &()).await else {
+            return Err("invalid multipart body");
+        };
+
+        return parse_multipart(multipart)
+            .await
+            .map_err(|_| "invalid multipart body");
+    }
+
+    let Ok(bytes) = axum::body::to_bytes(request.into_body(), body_limit(runtime)).await else {
+        return Err("invalid urlencoded body");
+    };
+
+    Ok(FormData::from_urlencoded(&String::from_utf8_lossy(&bytes)))
 }
 
 /// 把 multipart 表单读成 [`FormData`]（分块字段读进内存）。

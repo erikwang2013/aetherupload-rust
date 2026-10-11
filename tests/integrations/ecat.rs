@@ -115,6 +115,23 @@ async fn post_multipart(
     body
 }
 
+/// urlencoded 表单请求（前端脚本发 `preprocess` 的形态）。
+async fn post_urlencoded(app: &axum::Router, path: &str, form: &str) -> (StatusCode, String) {
+    let request = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header(
+            "content-type",
+            "application/x-www-form-urlencoded; charset=UTF-8",
+        )
+        .body(Body::from(form.to_string()))
+        .unwrap();
+
+    let (status, body, _) = send(app, request).await;
+
+    (status, body)
+}
+
 async fn get(app: &axum::Router, path: &str) -> (StatusCode, String, HeaderMap) {
     send(
         app,
@@ -225,6 +242,35 @@ async fn routes_return_an_axum_router_for_ecat_http_server() {
     // 未预处理的路径 404（路由确实挂上了，而不是空 Router）
     let (status, _, _) = get(&mounted, "/aetherupload/display/nope_202610_x.txt").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 前端脚本的 `preprocess` 发的是 urlencoded（zepto 的默认编码），不是 multipart。
+/// 请求体按 `aetherupload-all.js` 的原样拼（含中文名的 percent 编码）；这条链路断了，
+/// e-cat 下的示例页第一步就会 400「上传失败」。
+#[tokio::test]
+async fn urlencoded_preprocess_matches_the_bundled_frontend() {
+    let root = temp_root("urlencoded");
+    let runtime = Arc::new(Runtime::new(Config::default(), &root).unwrap());
+    prepare(&runtime);
+    let app = app(runtime);
+
+    let (status, body) = post_urlencoded(
+        &app,
+        "/aetherupload/preprocess",
+        "resource_name=%E4%B8%AD%E6%96%87.txt&resource_size=12&group=file\
+         &resource_hash=d41d8cd98f00b204e9800998ecf8427e&locale=zh",
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "urlencoded 的预处理必须被接受: {body}"
+    );
+    assert_eq!(json_field(&body, "error"), "0", "预处理失败: {body}");
+    assert_eq!(json_field(&body, "resourceExt"), "txt");
 
     let _ = std::fs::remove_dir_all(&root);
 }

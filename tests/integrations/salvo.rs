@@ -276,3 +276,36 @@ async fn upload_display_download_roundtrip() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// 前端脚本的 `preprocess` 发的是 urlencoded（zepto 对普通对象 `data` 的默认编码），
+/// 不是 multipart —— salvo 的 `form_data()` 两种编码都收，这条把它钉住。
+#[tokio::test]
+async fn urlencoded_preprocess_matches_the_bundled_frontend() {
+    let (root, runtime) = setup("urlencoded");
+    let preprocess_path = runtime.config().route_preprocess.clone();
+    let router = Arc::new(routes(runtime));
+
+    let mut response = TestClient::post(format!("{ORIGIN}{preprocess_path}"))
+        .add_header(
+            CONTENT_TYPE,
+            "application/x-www-form-urlencoded; charset=UTF-8",
+            true,
+        )
+        // 前端脚本的原样拼法（含中文名的 percent 编码）
+        .body(
+            "resource_name=%E4%B8%AD%E6%96%87.txt&resource_size=12&group=file\
+             &resource_hash=d41d8cd98f00b204e9800998ecf8427e&locale=zh"
+                .as_bytes()
+                .to_vec(),
+        )
+        .send(router.clone())
+        .await;
+
+    assert_eq!(response.status_code, Some(StatusCode::OK));
+
+    let json = response.take_string().await.unwrap();
+    assert_eq!(json_field(&json, "error"), "0", "预处理失败：{json}");
+    assert_eq!(json_field(&json, "resourceExt"), "txt");
+
+    let _ = std::fs::remove_dir_all(&root);
+}

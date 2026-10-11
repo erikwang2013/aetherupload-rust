@@ -17,6 +17,9 @@
 //! `resource_chunk` 是文件字段，其余按文本字段读。分块读进内存 —— 默认分块 1MB，
 //! 比 PHP 落临时文件少一次磁盘往返；把 `chunk_size` 调得很大时请自行换流式解析。
 //!
+//! `preprocess` 的两种表单编码都收：urlencoded（前端脚本 zepto 的默认编码）与
+//! multipart（手工构造的请求），与 PHP 的 `request()->input()` 同宽。
+//!
 //! **请求体上限**：actix 的 `PayloadConfig` 只约束 `Bytes` / `String` / `Json` / `Form`
 //! 这几个提取器，原始的 `web::Payload` 不受它管 —— 上限因此自己拿（[`body_limit`] =
 //! 分块大小 + 1MB 余量）：读请求体时逐块累计，超了就断开，不会被静默截断（actix 的
@@ -37,7 +40,7 @@ use futures_util::stream::try_unfold;
 use multer::{Multipart, parse_boundary};
 
 use crate::controller::{ChunkBody, ResourceController, ResourceResponse, UploadController};
-use crate::integrations::{FormData, body_limit, display_route, download_route};
+use crate::integrations::{FormData, body_limit, display_route, download_route, is_urlencoded};
 use crate::runtime::Runtime;
 
 /// 流式下发时每次从磁盘读出的字节数。
@@ -67,8 +70,20 @@ async fn preprocess(
     req: HttpRequest,
     payload: web::Payload,
 ) -> HttpResponse {
-    let Ok(form) = parse_multipart(&req, payload, body_limit(&runtime)).await else {
-        return HttpResponse::BadRequest().body("invalid multipart body");
+    let limit = body_limit(&runtime);
+
+    // 按 `Content-Type` 分流：前端脚本发 urlencoded，手工构造的请求发 multipart
+    let form = match content_type(&req) {
+        Some(content_type) if is_urlencoded(content_type) => {
+            match read_body(payload, limit).await {
+                Ok(body) => FormData::from_urlencoded(&String::from_utf8_lossy(&body)),
+                Err(_) => return HttpResponse::BadRequest().body("invalid urlencoded body"),
+            }
+        }
+        _ => match parse_multipart(&req, payload, limit).await {
+            Ok(form) => form,
+            Err(_) => return HttpResponse::BadRequest().body("invalid multipart body"),
+        },
     };
 
     let result =
@@ -105,6 +120,13 @@ async fn download(runtime: web::Data<Runtime>, path: web::Path<(String, String)>
     serve(response).await
 }
 
+/// 请求的 `Content-Type`（缺头或非法字节一律当没有）。
+fn content_type(req: &HttpRequest) -> Option<&str> {
+    req.headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+}
+
 /// 把 multipart 表单读成 [`FormData`]（分块字段读进内存）。
 ///
 /// `limit` 是整条请求体的字节上限：actix 默认对原始 `Payload` 不设防，这里必须显式给，
@@ -114,11 +136,8 @@ async fn parse_multipart(
     payload: web::Payload,
     limit: usize,
 ) -> Result<FormData, String> {
-    let content_type = req
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| "missing multipart Content-Type".to_string())?;
+    let content_type =
+        content_type(req).ok_or_else(|| "missing multipart Content-Type".to_string())?;
 
     let boundary = parse_boundary(content_type).map_err(|err| err.to_string())?;
     let body = read_body(payload, limit).await?;

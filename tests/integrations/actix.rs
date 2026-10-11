@@ -183,12 +183,65 @@ async fn upload_then_display_and_download() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// 前端脚本发的是 urlencoded —— zepto 对普通对象 `data` 的默认编码，不是 multipart。
+/// 请求体按 `aetherupload-all.js` 里 `preprocess` 的原样拼（含中文名的 percent 编码）。
+#[actix_web::test]
+async fn urlencoded_preprocess_matches_the_bundled_frontend() {
+    let root = std::env::temp_dir().join(format!(
+        "aetherupload-actix-urlencoded-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+
+    let runtime = Arc::new(Runtime::new(Config::default(), &root).unwrap());
+
+    let mut lines = Vec::new();
+    assert_eq!(
+        aetherupload::console::list_groups(&runtime, &mut |line| lines.push(line.to_string())),
+        0,
+        "{lines:?}"
+    );
+
+    let app = test::init_service(App::new().service(routes(runtime))).await;
+
+    let resp = test::call_service(
+        &app,
+        urlencoded_request(
+            "/aetherupload/preprocess",
+            "resource_name=%E4%B8%AD%E6%96%87.txt&resource_size=12&group=file\
+             &resource_hash=d41d8cd98f00b204e9800998ecf8427e&locale=zh",
+        )
+        .to_request(),
+    )
+    .await;
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "urlencoded 的预处理必须被接受"
+    );
+
+    let body = text(test::read_body(resp).await);
+    assert_eq!(json_field(&body, "error"), "0", "预处理失败：{body}");
+    assert_eq!(json_field(&body, "resourceExt"), "txt");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// 一段带 `%PDF` 魔数的内容。
 fn pdf_payload(len: usize) -> Vec<u8> {
     let mut content = b"%PDF-1.7\n".to_vec();
     content.resize(len, b'x');
 
     content
+}
+
+/// 组一个 urlencoded 请求（前端脚本发 `preprocess` 的形态）。
+fn urlencoded_request(path: &str, body: &str) -> test::TestRequest {
+    test::TestRequest::post()
+        .uri(path)
+        .insert_header((header::CONTENT_TYPE, "application/x-www-form-urlencoded"))
+        .set_payload(body.to_string())
 }
 
 /// 组一个 multipart 请求（`file` 给 `resource_chunk` 用）。

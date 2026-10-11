@@ -203,3 +203,30 @@ async fn upload_display_download_roundtrip() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// 前端脚本发的是 urlencoded —— zepto 对普通对象 `data` 的默认编码，不是 multipart。
+/// 请求体按 `aetherupload-all.js` 里 `preprocess` 的原样拼（含中文名的 percent 编码）。
+#[tokio::test]
+async fn urlencoded_preprocess_matches_the_bundled_frontend() {
+    let (root, runtime) = setup("urlencoded");
+    let preprocess_path = runtime.config().route_preprocess.clone();
+
+    let client = TestClient::new(routes(runtime));
+
+    let response = client
+        .post(&preprocess_path)
+        .content_type("application/x-www-form-urlencoded; charset=UTF-8")
+        .body(
+            "resource_name=%E4%B8%AD%E6%96%87.txt&resource_size=12&group=file\
+             &resource_hash=d41d8cd98f00b204e9800998ecf8427e&locale=zh",
+        )
+        .send()
+        .await;
+    response.assert_status_is_ok();
+
+    let json = response.0.into_body().into_string().await.unwrap();
+    assert_eq!(json_field(&json, "error"), "0", "预处理失败：{json}");
+    assert_eq!(json_field(&json, "resourceExt"), "txt");
+
+    let _ = std::fs::remove_dir_all(&root);
+}

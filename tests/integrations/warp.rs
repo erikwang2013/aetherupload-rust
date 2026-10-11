@@ -206,3 +206,75 @@ async fn missing_resources_are_404() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// 前端脚本发的是 urlencoded —— zepto 对普通对象 `data` 的默认编码，不是 multipart。
+/// 这条分支走 `.or()` 的另一侧：content-type 不是 urlencoded 时它拒绝，落到 multipart。
+#[tokio::test]
+async fn urlencoded_preprocess_matches_the_bundled_frontend() {
+    let root = temp_root("urlencoded");
+    let runtime = Arc::new(Runtime::new(Config::default(), &root).unwrap());
+    prepare(&runtime);
+    let routes = aetherupload::integrations::warp::routes(runtime);
+
+    let response = warp::test::request()
+        .method("POST")
+        .path("/aetherupload/preprocess")
+        .header(
+            "content-type",
+            "application/x-www-form-urlencoded; charset=UTF-8",
+        )
+        .body(
+            "resource_name=%E4%B8%AD%E6%96%87.txt&resource_size=12&group=file\
+             &resource_hash=d41d8cd98f00b204e9800998ecf8427e&locale=zh",
+        )
+        .reply(&routes)
+        .await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "urlencoded 的预处理必须被接受"
+    );
+
+    let body = String::from_utf8(response.body().to_vec()).unwrap();
+    assert_eq!(json_field(&body, "error"), "0", "预处理失败：{body}");
+    assert_eq!(json_field(&body, "resourceExt"), "txt");
+
+    // multipart 那条分支仍然照旧（同一个 runtime，换个编码再打一次）
+    let response = warp::test::request()
+        .method("POST")
+        .path("/aetherupload/preprocess")
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={BOUNDARY}"),
+        )
+        .body(multipart_body(
+            &[
+                ("resource_name", "a.txt"),
+                ("resource_size", "12"),
+                ("group", "file"),
+                ("resource_hash", "d41d8cd98f00b204e9800998ecf8427e"),
+            ],
+            None,
+        ))
+        .reply(&routes)
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = String::from_utf8(response.body().to_vec()).unwrap();
+    assert_eq!(json_field(&body, "error"), "0", "预处理失败：{body}");
+
+    // 两种都不认的 content-type 仍按 multipart 分支原来的判定回 400
+    // （warp 的 content-type 检查是 `InvalidHeader`）—— urlencoded 分支的 404
+    // 优先级最低，不会把它的状态码顶上来
+    let response = warp::test::request()
+        .method("POST")
+        .path("/aetherupload/preprocess")
+        .header("content-type", "application/json")
+        .body("{}")
+        .reply(&routes)
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let _ = std::fs::remove_dir_all(&root);
+}

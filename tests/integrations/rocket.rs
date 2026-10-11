@@ -177,6 +177,48 @@ fn upload_then_display_and_download() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// 前端脚本的 `preprocess` 发的是 urlencoded（zepto 对普通对象 `data` 的默认编码），
+/// 不是 multipart —— rocket 的 `Form<T>` 两种编码都收，这条把它钉住（其余适配层
+/// 按 `Content-Type` 分流到同一个内核解析）。
+#[test]
+fn urlencoded_preprocess_matches_the_bundled_frontend() {
+    let root = std::env::temp_dir().join(format!(
+        "aetherupload-rocket-urlencoded-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+
+    let runtime = Arc::new(Runtime::new(Config::default(), &root).unwrap());
+
+    let mut lines = Vec::new();
+    assert_eq!(
+        aetherupload::console::list_groups(&runtime, &mut |line| lines.push(line.to_string())),
+        0,
+        "{lines:?}"
+    );
+
+    let client = Client::tracked(mount(rocket::build(), runtime)).expect("rocket 应当能点火");
+
+    let response = client
+        .post("/aetherupload/preprocess")
+        .header(Header::new(
+            "Content-Type",
+            "application/x-www-form-urlencoded; charset=UTF-8",
+        ))
+        .body(
+            "resource_name=%E4%B8%AD%E6%96%87.txt&resource_size=12&group=file\
+             &resource_hash=d41d8cd98f00b204e9800998ecf8427e&locale=zh",
+        )
+        .dispatch();
+
+    assert_eq!(response.status(), Status::Ok);
+    let body = text(response.into_bytes().expect("响应体"));
+    assert_eq!(json_field(&body, "error"), "0", "预处理失败：{body}");
+    assert_eq!(json_field(&body, "resourceExt"), "txt");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// 一段带 `%PDF` 魔数的内容。
 fn pdf_payload(len: usize) -> Vec<u8> {
     let mut content = b"%PDF-1.7\n".to_vec();

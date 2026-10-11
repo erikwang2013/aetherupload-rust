@@ -44,6 +44,26 @@ impl FormData {
         }
     }
 
+    /// 从 urlencoded 表单串构造 —— 前端 `preprocess` 发的就是这个编码
+    /// （zepto / jQuery 对普通对象 `data` 的默认 `Content-Type`）。
+    ///
+    /// 语义与 PHP 解析表单一致：`+` 解成空格、`%XX` 解成字节、非法百分号原样保留、
+    /// 没有 `=` 的键当空串、重名同样取最后一个。
+    pub fn from_urlencoded(body: &str) -> Self {
+        let mut form = Self::new();
+
+        for pair in body.split('&') {
+            if pair.is_empty() {
+                continue;
+            }
+
+            let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+            form.push_text(percent_decode(name), percent_decode(value));
+        }
+
+        form
+    }
+
     pub fn push_text(&mut self, name: impl Into<String>, value: impl Into<String>) {
         self.fields
             .push((name.into(), FieldValue::Text(value.into())));
@@ -104,6 +124,49 @@ impl FormData {
     }
 }
 
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => {
+                out.push(b' ');
+                index += 1;
+            }
+            b'%' if index + 2 < bytes.len() => {
+                match (hex_digit(bytes[index + 1]), hex_digit(bytes[index + 2])) {
+                    (Some(high), Some(low)) => {
+                        out.push(high * 16 + low);
+                        index += 3;
+                    }
+                    // 非法转义按 PHP 的 urldecode 处置：原样留下
+                    _ => {
+                        out.push(b'%');
+                        index += 1;
+                    }
+                }
+            }
+            byte => {
+                out.push(byte);
+                index += 1;
+            }
+        }
+    }
+
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,5 +215,44 @@ mod tests {
         form.push_text("group", "other");
 
         assert_eq!(form.text("group"), Some("other"));
+    }
+
+    /// 前端 `preprocess` 真实发的编码：zepto 对普通对象 `data` 走 urlencoded。
+    #[test]
+    fn urlencoded_form_matches_the_frontend_payload() {
+        let form = FormData::from_urlencoded(
+            "resource_name=%E4%B8%AD%E6%96%87+2.txt&resource_size=2048&group=file\
+             &resource_hash=d41d8cd98f00b204e9800998ecf8427e&locale=zh",
+        );
+
+        // `+` 是空格，`%XX` 按 UTF-8 逐字节还原
+        assert_eq!(form.text("resource_name"), Some("中文 2.txt"));
+        assert_eq!(form.text("resource_size"), Some("2048"));
+        assert_eq!(form.text("group"), Some("file"));
+        assert_eq!(form.text("locale"), Some("zh"));
+
+        let preprocess = form.to_preprocess_request();
+        assert_eq!(preprocess.resource_name.as_deref(), Some("中文 2.txt"));
+        assert_eq!(preprocess.group.as_deref(), Some("file"));
+    }
+
+    /// 宽松模式不发 `resource_hash`；空段、无 `=`、非法转义都要与 PHP 的解析对齐。
+    #[test]
+    fn urlencoded_edge_cases_follow_php() {
+        let form = FormData::from_urlencoded("a=1&&b&c=%zz&d=%E4%B8%AD");
+
+        assert_eq!(form.text("a"), Some("1"));
+        assert_eq!(form.text("b"), Some("")); // 无 `=` → 空串
+        assert_eq!(form.text("c"), Some("%zz")); // 非法转义原样保留
+        assert_eq!(form.text("d"), Some("中")); // 多字节字符按字节还原（前端 encodeURIComponent 就这么发）
+        assert_eq!(form.text("resource_hash"), None);
+
+        // 重名同样取最后一个（与 multipart 解析一致）
+        assert_eq!(
+            FormData::from_urlencoded("group=file&group=other").text("group"),
+            Some("other")
+        );
+        // `%` 收尾不越界
+        assert_eq!(FormData::from_urlencoded("e=%").text("e"), Some("%"));
     }
 }

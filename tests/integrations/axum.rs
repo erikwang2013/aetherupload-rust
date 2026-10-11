@@ -259,6 +259,51 @@ async fn full_upload_flow_through_axum() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
+/// 前端脚本发的是 urlencoded —— zepto 对普通对象 `data` 的默认编码，不是 multipart。
+/// 请求体按 `aetherupload-all.js` 里 `preprocess` 的原样拼（含中文名的 percent 编码、
+/// `; charset=UTF-8` 参数）。这条链路断了，示例页第一步就会 400「上传失败」。
+#[tokio::test]
+async fn urlencoded_preprocess_matches_the_bundled_frontend() {
+    let (base, router) = app("urlencoded");
+
+    let form = "resource_name=%E4%B8%AD%E6%96%87.txt&resource_size=12&group=file\
+                &resource_hash=d41d8cd98f00b204e9800998ecf8427e&locale=zh";
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/aetherupload/preprocess")
+                .header(
+                    header::CONTENT_TYPE,
+                    "application/x-www-form-urlencoded; charset=UTF-8",
+                )
+                .body(Body::from(form))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "urlencoded 的预处理必须被接受"
+    );
+
+    let body = body_text(response).await;
+    assert_eq!(json_value(&body, "error"), Some("0"), "预处理失败：{body}");
+    assert_eq!(json_value(&body, "resourceExt"), Some("txt"));
+    assert!(
+        !json_value(&body, "resourceTempBaseName")
+            .unwrap_or_default()
+            .is_empty(),
+        "应当下发临时名：{body}"
+    );
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 #[tokio::test]
 async fn bad_requests_keep_the_http_contract() {
     let (base, router) = app("errors");
