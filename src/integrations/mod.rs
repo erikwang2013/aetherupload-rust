@@ -82,6 +82,12 @@ pub fn resource_not_found_response() -> (u16, &'static str, String) {
     problem_response(&Problem::resource_not_found(None))
 }
 
+/// 「路径在、方法不对」的问题响应：405 `method_not_allowed`（warp 没有路由表，
+/// `recover` 会兜住这类与请求体无关的拒绝；别家由框架自己的 405 处理）。
+pub fn method_not_allowed_response(locale: Option<&str>) -> (u16, &'static str, String) {
+    problem_response(&Problem::method_not_allowed(locale))
+}
+
 /// 成功体三元组：200 + `application/json`（上传结果，见协议 §2）。
 pub fn ok_response(body: String) -> (u16, &'static str, String) {
     (200, "application/json", body)

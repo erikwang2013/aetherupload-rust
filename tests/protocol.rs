@@ -353,11 +353,15 @@ fn display_and_download_serve_the_file() {
         }
     }
 
-    // 分组段对不上任何配置 → 400 invalid_group（「a_b_c_d」解出来是分组 a）
+    // 分组段对不上任何配置 → 404 resource_not_found（「a_b_c_d」解出来是分组 a）：
+    // 读路径只是「标识符指不到资源」，与文件不存在同一结局，也顺带不泄露分组配置；
+    // 上传端点上的未知分组才是 400 invalid_group（请求要求往不存在的分组里写）
     for bad in ["nope_202610_deadbeef.jpg", "a_b_c_d"] {
         match harness.resources().display(bad) {
-            ResourceResponse::Problem(problem) => assert_problem(&problem, 400, "invalid_group"),
-            other => panic!("未知分组应报分组错误（{bad}），实际状态 {}", other.status()),
+            ResourceResponse::Problem(problem) => {
+                assert_problem(&problem, 404, "resource_not_found")
+            }
+            other => panic!("未知分组应报「找不到」({bad})，实际状态 {}", other.status()),
         }
     }
 
@@ -408,10 +412,15 @@ fn instant_completion_skips_the_second_upload() {
     assert_eq!(pre.saved_path, first_path, "秒传应返回既有 saved_path");
     assert!(file.is_file());
 
-    // 复制一份再传：秒传命中不影响磁盘
+    // 复制一份再传：秒传命中不影响磁盘（这轮预处理器就会给 saved_path，
+    // 走不了 `upload()` 里「非秒传场景」的断言，所以手工走一遍）
     let before = std::fs::read(&file).unwrap();
-    let _ = harness.upload("data.txt", &content);
-    assert_eq!(std::fs::read(&file).unwrap(), before);
+    let again = harness.preprocess_ok("data.txt", &content, "file");
+    assert_eq!(
+        again.saved_path, first_path,
+        "秒传命中应直接给既有 saved_path"
+    );
+    assert_eq!(std::fs::read(&file).unwrap(), before, "秒传命中不该改磁盘");
 }
 
 #[test]
@@ -973,7 +982,9 @@ fn a_single_chunk_larger_than_chunk_size_is_413() {
     )));
     assert_problem(&problem, 413, "payload_too_large");
 
-    // 边界内（恰好等于 chunk_size）照常接受
+    // 边界内（恰好等于 chunk_size）照常接受 —— 413 按「整份作废」语义已把这轮的
+    // `.part` 清掉，所以要另起一轮预处理（不是同一份上传的续传）
+    let pre = harness.preprocess_ok("edge.txt", &content, "file");
     assert!(
         harness
             .uploader()

@@ -202,18 +202,20 @@ save_chunk → {"saved_path":""}                          // middle chunk: not f
 | Scenario | HTTP | code |
 |---|---|---|
 | Missing / invalid parameter (name, size, group, chunk_total, chunk_index, temp_basename, ext, subdir…) | 400 | `invalid_parameter` |
-| Group not configured, or the name contains an underscore | 400 | `invalid_group` |
+| Unparsable body / missing `Content-Type` (**decided by the adapter**) | 400 | `invalid_request_body` |
+| Path exists, method does not (**adapter fallback**, where warp has no router) | 405 | `method_not_allowed` |
+| Group not configured, or the name contains an underscore (**upload endpoints**) | 400 | `invalid_group` |
 | Not preprocessed / temporary resource gone (neither `.part` nor checkpoint remains) | 409 | `upload_not_prepared` |
 | Chunk index out of order (neither `last+1` nor a valid final chunk) | 409 | `chunk_out_of_order` + `expected_index` extension member |
 | Cumulative write exceeds the declared `resource_size`, or one chunk exceeds `chunk_size` | 413 | `payload_too_large` |
 | Final-chunk whole-file md5 does not match the declared hash (`lax_mode=false`) | 422 | `hash_mismatch` |
 | Extension / MIME not in the allowed set | 415 | `unsupported_media_type` |
 | Disk / IO / index and other internal failures | 500 | `internal_error` |
-| display / download cannot find the file | 404 | `resource_not_found` |
+| display / download cannot find the file, or `saved_path` names an unconfigured group | 404 | `resource_not_found` |
 | display / download got an invalid `saved_path` / `new_name` | 400 | `invalid_parameter` |
 | Instant-upload index unavailable / miss | —— not a failure: continue as a miss, never an error | —— |
 
-Check order: parameters → group → temporary resource → index → size → final chunk (MIME → md5). Re-sending **the chunk the server has not received yet** (`index == last+1`) is accepted idempotently; re-sending an **already-landed** chunk returns 409 `chunk_out_of_order`. display / download failures are problem responses too, while the success paths (file body / 302 / X-Accel-Redirect) are unchanged.
+Check order: parameters and group (group-dependent ones — extension safety, size cap, hash format — are checked once the group is resolved) → temporary resource → index → size → final chunk (MIME → md5). Re-sending **the chunk the server has not received yet** (`index == last+1`) is accepted idempotently; re-sending an **already-landed** chunk returns 409 `chunk_out_of_order`. display / download failures are problem responses too, while the success paths (file body / 302 / X-Accel-Redirect) are unchanged.
 
 **Frontend script and example page**
 

@@ -232,10 +232,17 @@ fn push_text(form: &mut FormData, name: &str, value: Option<&str>) {
 
 /// 解析表单；框架层的拒绝一律改回我们的问题响应（协议 §3 的形态）。
 ///
-/// - 413（`data-form` 限额，`Errors` 里是 `Multipart(FieldSizeExceeded/StreamSizeExceeded)`）
-///   保持状态码 → 413 `payload_too_large`；
-/// - 体级失败（`ErrorKind::Multipart` / `Io`：畸形/截断 multipart、断流）→ 400
-///   `invalid_request_body`，与别家的解析失败同一归类；
+/// - **超限**：先按 `Content-Length` 与 `limit`（= `body_limit`，`mount()` 把它同步给
+///   `data-form`）自己判一次 → 413 `payload_too_large`，与别家的框架层 413 同一形态。
+///   没有 `Content-Length`（chunked 体）时靠 rocket 自己的限额兜底 —— 那边的错误形态
+///   是 `ErrorKind::InvalidLength { max: Some(..) }`（见下），同样归 413。
+/// - **尺寸判据**：`InvalidLength { min: None, max: Some(_) }` → 413 `payload_too_large`。
+///   rocket 把 multer 的 `FieldSizeExceeded` / `StreamSizeExceeded` **提前转成**这个
+///   变体，所以不能用 `Multipart(_)` 判超限。
+/// - **体级失败**（`Multipart` / `Io` / `InvalidLength` 其余形态：畸形、无 boundary、
+///   截断、断流）→ 400 `invalid_request_body`，与别家的解析失败同一归类。
+///   **这一支不看状态码**：rocket 对「截断的 multipart」也会标 `PayloadTooLarge`，
+///   按状态判会把畸形体误码成超限。
 /// - 字段级失败（未知/重复字段等）→ 400 `invalid_parameter`（别家这类错误由内核回；
 ///   全 `Option` 字段下缺字段不进 `Errors`，照常流到内核）。
 ///
@@ -247,20 +254,49 @@ fn push_text(form: &mut FormData, name: &str, value: Option<&str>) {
 async fn parse<'r, T: FromForm<'r>>(
     req: &'r Request<'_>,
     data: Data<'r>,
+    limit: usize,
 ) -> Result<Form<T>, Outcome<'r>> {
     use rocket::data::Outcome as DataOutcome;
 
+    let over_limit = req
+        .headers()
+        .get_one("Content-Length")
+        .and_then(|value| value.parse::<u64>().ok())
+        .is_some_and(|length| length > limit as u64);
+
+    if over_limit {
+        return Err(json_outcome(payload_too_large_response(None)));
+    }
+
     match Form::<T>::from_data(req, data).await {
         DataOutcome::Success(form) => Ok(form),
-        DataOutcome::Error((status, _)) if status == Status::PayloadTooLarge => {
-            Err(json_outcome(payload_too_large_response(None)))
-        }
-        DataOutcome::Error((_, errors)) => {
-            let body_level = errors
-                .iter()
-                .any(|error| matches!(error.kind, ErrorKind::Multipart(_) | ErrorKind::Io(_)));
+        DataOutcome::Error((_status, errors)) => {
+            // 尺寸类错误才是真超限：rocket 把 multer 的 `FieldSizeExceeded` /
+            // `StreamSizeExceeded` **提前转成** `InvalidLength { max: Some(..) }`，
+            // 所以判据是「带上限的 InvalidLength」，不是 `Multipart`。反过来说
+            // `Multipart(_)` 只包畸形 / 无 boundary / 读流失败（体级失败 → 400），
+            // `InvalidLength { max: None }`（截断）与 `Io(_)` 同属体级。
+            // 状态码不作判据：rocket 对截断的 multipart 也会标 `PayloadTooLarge`。
+            let over_limit = errors.iter().any(|error| {
+                matches!(
+                    error.kind,
+                    ErrorKind::InvalidLength {
+                        min: None,
+                        max: Some(_)
+                    }
+                )
+            });
 
-            Err(json_outcome(if body_level {
+            let body_level = errors.iter().any(|error| {
+                matches!(
+                    error.kind,
+                    ErrorKind::Multipart(_) | ErrorKind::Io(_) | ErrorKind::InvalidLength { .. }
+                )
+            });
+
+            Err(json_outcome(if over_limit {
+                payload_too_large_response(None)
+            } else if body_level || errors.iter().next().is_none() {
                 invalid_request_body_response(None)
             } else {
                 invalid_parameter_response(None)
@@ -275,7 +311,7 @@ async fn preprocess<'r>(
     req: &'r Request<'_>,
     data: Data<'r>,
 ) -> Outcome<'r> {
-    let form = match parse::<PreprocessForm>(req, data).await {
+    let form = match parse::<PreprocessForm>(req, data, body_limit(runtime)).await {
         Ok(form) => form,
         Err(outcome) => return outcome,
     };
@@ -293,7 +329,7 @@ async fn save_chunk<'r>(
     req: &'r Request<'_>,
     data: Data<'r>,
 ) -> Outcome<'r> {
-    let form = match parse::<SaveChunkForm<'_>>(req, data).await {
+    let form = match parse::<SaveChunkForm<'_>>(req, data, body_limit(runtime)).await {
         Ok(form) => form,
         Err(outcome) => return outcome,
     };

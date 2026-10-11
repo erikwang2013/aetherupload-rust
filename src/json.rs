@@ -77,6 +77,12 @@ impl Problem {
         Self::localized(400, "invalid_parameter", locale, Vec::new())
     }
 
+    /// 405 `method_not_allowed`：**适配层**兜住「路径在、方法不对」的框架层拒绝时用它
+    /// （目前只有 warp —— 它没有路由表，`recover` 会兜住这类与请求体无关的拒绝）。
+    pub fn method_not_allowed(locale: Option<&str>) -> Self {
+        Self::localized(405, "method_not_allowed", locale, Vec::new())
+    }
+
     pub fn status(&self) -> u16 {
         self.status
     }

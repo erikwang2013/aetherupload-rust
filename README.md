@@ -202,18 +202,20 @@ save_chunk → {"saved_path":""}                          // 中间块：还没�
 | 场景 | HTTP | code |
 |---|---|---|
 | 参数缺失 / 非法（name、size、group、chunk_total、chunk_index、temp_basename、ext、subdir…） | 400 | `invalid_parameter` |
-| 分组未配置，或名字含下划线 | 400 | `invalid_group` |
+| 请求体无法解析 / 缺 `Content-Type`（**适配层判定**） | 400 | `invalid_request_body` |
+| 路径在、方法不对（**适配层兜底**，warp 无路由表时） | 405 | `method_not_allowed` |
+| 分组未配置，或名字含下划线（**上传端点**） | 400 | `invalid_group` |
 | 未预处理 / 临时资源已不存在（`.part` 与断点都没了） | 409 | `upload_not_prepared` |
 | 分块序号不连续（既不是 `last+1`，也不是合法末块） | 409 | `chunk_out_of_order`＋扩成员 `expected_index` |
 | 累计写入超过声明的 `resource_size`，或单块超过 `chunk_size` | 413 | `payload_too_large` |
 | 末块整份 md5 与声明不符（`lax_mode=false`） | 422 | `hash_mismatch` |
 | 扩展名 / MIME 不在允许集 | 415 | `unsupported_media_type` |
 | 磁盘 / IO / 索引等内部失败 | 500 | `internal_error` |
-| display / download 找不到文件 | 404 | `resource_not_found` |
+| display / download 找不到文件，或 `saved_path` 指向未配置的分组 | 404 | `resource_not_found` |
 | display / download 的 `saved_path` / `new_name` 非法 | 400 | `invalid_parameter` |
 | 秒传索引不可用 / 未命中 | —— 不算失败：按未命中继续，绝不报错 | —— |
 
-检查顺序：参数 → 分组 → 临时资源 → 序号 → 大小 → 末块（MIME → md5）。重发**服务端尚未收到的那一块**（`index == last+1`）幂等接受；重发**已落盘**的块返回 409 `chunk_out_of_order`。display / download 的失败也是问题响应，成功路径（文件本体 / 302 / X-Accel-Redirect）不变。
+检查顺序：参数与分组（分组相关参数 —— 扩展名安全、大小上限、hash 格式 —— 在分组落地后校验）→ 临时资源 → 序号 → 大小 → 末块（MIME → md5）。重发**服务端尚未收到的那一块**（`index == last+1`）幂等接受；重发**已落盘**的块返回 409 `chunk_out_of_order`。display / download 的失败也是问题响应，成功路径（文件本体 / 302 / X-Accel-Redirect）不变。
 
 **前端脚本与示例页**
 

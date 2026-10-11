@@ -10,9 +10,10 @@
 //! 3. **默认**：交回本地文件路径，由宿主框架的文件响应下发。
 //!
 //! 失败一律是 [`ResourceResponse::Problem`]，且 2.0 把 1.x 折成一句 404 文本的几种
-//! 情况拆开：寻址串解码失败 → 400 `invalid_parameter`；分组非法 → 400 `invalid_group`；
-//! 文件不存在 → 404 `resource_not_found`；**存储/IO 故障 → 500 `internal_error`**
-//! （读不了盘不能被说成「文件不存在」）。
+//! 情况拆开：寻址串解码失败 → 400 `invalid_parameter`；**分组未配置/不可解析 → 404
+//! `resource_not_found`**（标识符合法但指不到资源，顺带不外泄分组配置）；文件不存在
+//! → 404 `resource_not_found`；**存储/IO 故障 → 500 `internal_error`**（读不了盘不能
+//! 被说成「文件不存在」）。
 //!
 //! 一条安全语义：**可内联渲染的扩展名（svg/html/js/…）强制转附件**，防止上传的
 //! SVG/HTML 在同源下变成 XSS；成功路径都带 `X-Content-Type-Options: nosniff`。
@@ -197,15 +198,16 @@ impl ResourceController {
         }
     }
 
-    /// 寻址 + 存在性检查：解码失败 → 400；分组非法/未配置 → 400；文件不存在 → 404；
-    /// 存储驱动故障 → 500。
+    /// 寻址 + 存在性检查：解码失败 → 400（请求本身不合法）；**分组未配置/不可解析
+    /// → 404**（标识符合法但指不到任何资源 —— 与「文件不存在」同一结局，顺带不向外
+    /// 泄露本部署配了哪些分组）；文件不存在 → 404；存储驱动故障 → 500。
     fn locate(&self, uri: &str) -> std::result::Result<Resource, Problem> {
         let params = SavedPath::decode(uri).map_err(|_| bad_parameter())?;
         let snapshot = self
             .runtime
             .config()
             .resolve_group(&params.group)
-            .map_err(|_| Problem::localized(400, "invalid_group", None, Vec::new()))?;
+            .map_err(|_| Problem::resource_not_found(None))?;
 
         let resource = Resource::new(
             self.runtime.upload_root(),
@@ -422,7 +424,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// 失败三态：解码失败 400 / 分组非法 400 / 文件不存在 404；`headers()` 为空表。
+    /// 失败三态：解码失败 400 / 分组未配置 404 / 文件不存在 404；`headers()` 为空表。
     #[test]
     fn failures_are_problem_responses() {
         let (root, runtime) = runtime("fail");
@@ -444,7 +446,12 @@ mod tests {
         assert_eq!((problem.status(), problem.code), (400, "invalid_parameter"));
 
         let problem = problem_of(controller.display("nope_202610_x.jpg"));
-        assert_eq!((problem.status(), problem.code), (400, "invalid_group"));
+        // 未知分组在**读路径**与「文件不存在」同归 404：标识符合法但指不到资源。
+        // （上传端点上的未知分组才是 400 invalid_group —— 请求要求往不存在的分组里写。）
+        assert_eq!(
+            (problem.status(), problem.code),
+            (404, "resource_not_found")
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

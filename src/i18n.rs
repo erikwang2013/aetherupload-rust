@@ -68,6 +68,11 @@ pub const MESSAGES: &[(&str, &str, &str)] = &[
         "错误：资源不存在",
         "Error: resource not found",
     ),
+    (
+        "method_not_allowed",
+        "错误：请求方法不被允许",
+        "Error: method not allowed",
+    ),
     // —— 1.x 遗留键：只进日志 ——
     (
         "upload_error",
@@ -213,6 +218,7 @@ mod tests {
             "unsupported_media_type",
             "internal_error",
             "resource_not_found",
+            "method_not_allowed",
         ] {
             let zh = translate(code, "zh");
             let en = translate(code, "en");

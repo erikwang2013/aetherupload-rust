@@ -253,6 +253,9 @@ impl Harness {
         )
     }
 
+    /// 参数就是这条请求的全部输入，拆成结构体只会让每个调用点更长 —— 测试助手，
+    /// 保持「一眼看清发了什么」比讨好 lint 重要。
+    #[allow(clippy::too_many_arguments)]
     fn save_chunk(
         &self,
         ctx: &str,

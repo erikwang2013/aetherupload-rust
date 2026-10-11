@@ -299,11 +299,13 @@ mod tests {
     #[test]
     fn size_limits_are_413() {
         // 单块 > chunk_size
-        let (root, controller) = controller_with("big-chunk", {
-            let mut config = Config::default();
-            config.chunk_size = 4;
-            config
-        });
+        let (root, controller) = controller_with(
+            "big-chunk",
+            Config {
+                chunk_size: 4,
+                ..Config::default()
+            },
+        );
         let ok = controller.preprocess(&pre_request("a.txt", "8")).unwrap();
         assert_eq!(ok.chunk_size, 4);
 
@@ -459,8 +461,10 @@ mod tests {
         std::fs::create_dir_all(root.join("storage/app/aetherupload/file")).unwrap();
         std::fs::create_dir_all(root.join("storage/app/aetherupload/_header")).unwrap();
 
-        let mut config = Config::default();
-        config.instant_completion = true;
+        let config = Config {
+            instant_completion: true,
+            ..Config::default()
+        };
         let runtime = Arc::new(
             Runtime::new(config, &root)
                 .unwrap()

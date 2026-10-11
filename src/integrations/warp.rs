@@ -15,9 +15,12 @@
 //! 本适配器自己判定的失败也回同一形态：坏 multipart / 坏 urlencoded / 缺
 //! `Content-Type` → 400 `invalid_request_body`；定位到文件但打开失败 → 404
 //! `resource_not_found`。**框架层的拒绝没有例外**：`recover`（`handle_rejection`）
-//! 把这条链上所有 `Rejection` 都翻成问题响应 —— `content_length_limit` /
-//! `multipart::form().max_length()` 的 413 保持 413 `payload_too_large`，其余
-//! （`multipart` 过滤器的 content-type 判定等）一律 400 `invalid_request_body`。
+//! 把这条链上所有 `Rejection` 都按类型翻成问题响应 —— 没匹配上任何路由 → 404
+//! `resource_not_found`；路径在、方法不对 → 405 `method_not_allowed`；
+//! `content_length_limit` / `multipart::form().max_length()` 超限 → 413
+//! `payload_too_large`；其余（`multipart` 过滤器的 content-type 判定等）→ 400
+//! `invalid_request_body`。把「路径/方法」这类与请求体无关的拒绝也折算成 400
+//! 会说出错误的原因（GET 请求报「请求体无法解析」）。
 //!
 //! 本地文件下发用 [`warp::reply::stream`] + `tokio::fs::File` / `ReaderStream`：64KB
 //! 一分块、边读边发，整份文件不进内存，读盘走 `tokio::fs` 的阻塞线程池（不在 worker
@@ -54,8 +57,9 @@ use warp::{Buf, Reply, Stream};
 
 use crate::controller::{ChunkBody, ResourceController, ResourceResponse, UploadController};
 use crate::integrations::{
-    FormData, ParseFailure, body_limit, invalid_request_body_response, is_urlencoded, ok_response,
-    payload_too_large_response, problem_response, resource_not_found_response,
+    FormData, ParseFailure, body_limit, invalid_request_body_response, is_urlencoded,
+    method_not_allowed_response, ok_response, payload_too_large_response, problem_response,
+    resource_not_found_response,
 };
 use crate::json::{save_chunk_ok_to_json, upload_ok_to_json};
 use crate::runtime::Runtime;
@@ -90,8 +94,16 @@ pub fn routes(
         .unify()
         .recover(handle_rejection)
         // recover 的取出值被包成 `Either<正常路径, 恢复路径>`（warp 的私有类型），
-        // 两条携带的都是同一种响应：就地走 `Reply` 归约展平，对外保持 `(Response,)`
-        .map(|reply| reply.into_response())
+        // 两条携带的都是同一种响应：经泛型助手就地按 `Reply` 归约展平，对外保持 `(Response,)`
+        .map(flatten_reply)
+}
+
+/// 把 warp 包出来的「两条路合流」值归约成统一响应。
+///
+/// 该值的类型不可命名（warp 私有），闭包参数在这里推不出来 —— 泛型助手的参数类型
+/// 由调用点的取出类型落定，故用一个具名函数而非 `|reply| reply.into_response()`。
+fn flatten_reply(reply: impl Reply) -> Response {
+    reply.into_response()
 }
 
 /// 预处理：解析表单（urlencoded 或 multipart）→ 内核 `preprocess` → 上传结果体。
@@ -242,12 +254,28 @@ fn download(
 
 /// 框架层拒绝 → 问题响应；这里没有拦不住的拒绝点。
 ///
-/// `PayloadTooLarge`（`content_length_limit` / `multipart::form().max_length()`）保持
-/// 413，其余（content-type 不匹配、boundary 缺失、自定义 `warp::reject()`…）按
-/// 「请求体无法解析」回 400 `invalid_request_body`。
+/// warp 没有路由表，`recover` 会兜住「路径没匹配上」「方法不对」这类**与请求体无关**的
+/// 拒绝 —— 一律折算成「请求体无法解析」会说出错误的原因（GET 请求报体解析失败）。
+///
+/// 顺序有讲究：**体级迹象先于方法判定**。四条路由在一条链上，GET 分支对 POST 请求、
+/// POST 分支对 GET 请求**总会**留下 `MethodNotAllowed`，所以「先看方法」会把
+/// 「POST 到 preprocess 但 Content-Type 不认」这类请求误判成 405。分流：
+///
+/// - `PayloadTooLarge`（`content_length_limit` / `multipart::form().max_length()`）→ 413；
+/// - `InvalidHeader`（`multipart::form()` 的 content-type 判定不认）→ 400 `invalid_request_body`；
+/// - `MethodNotAllowed`（路径在、方法不对）→ 405 `method_not_allowed`；
+/// - `is_not_found()`（没匹配上任何路由；warp 把「全 NotFound 的组合」折叠回
+///   `Reason::NotFound`，覆盖得全）→ 404 `resource_not_found`；
+/// - 其余（boundary 缺失、读体失败、自定义 `warp::reject()`…）→ 400 `invalid_request_body`。
 async fn handle_rejection(err: Rejection) -> Result<Response, Infallible> {
     let triple = if err.find::<warp::reject::PayloadTooLarge>().is_some() {
         payload_too_large_response(None)
+    } else if err.find::<warp::reject::InvalidHeader>().is_some() {
+        invalid_request_body_response(None)
+    } else if err.find::<warp::reject::MethodNotAllowed>().is_some() {
+        method_not_allowed_response(None)
+    } else if err.is_not_found() {
+        resource_not_found_response()
     } else {
         invalid_request_body_response(None)
     };
