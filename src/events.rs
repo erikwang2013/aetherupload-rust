@@ -10,7 +10,10 @@
 //!   —— 此时 `*.part` 还是临时文件，可读可改写；
 //! - `upload_complete`：改名落盘、秒传索引写入之后 —— 拿到的是成品 [`Resource`]。
 //!
-//! 事件里抛错等同于上传失败（与 PHP 一致：异常会被控制器的 catch 接住并清理临时文件）。
+//! 监听器抛错**不影响上传结果** —— 与 PHP 一致：webman 的 `Event::emit` 对每个监听器
+//! 逐个 `catch (\Throwable)` 后继续，异常到不了控制器的 catch。Rust 侧同样隔离
+//! （[`crate::controller::UploadController`] 用 `catch_unwind` 包住回调），
+//! panic 消息由标准 panic hook 打到 stderr。
 
 use crate::partial::PartialResource;
 use crate::resource::Resource;
