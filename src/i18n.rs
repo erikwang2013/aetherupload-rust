@@ -7,8 +7,8 @@
 //! - **2.0 的 code**（`invalid_parameter`、`chunk_out_of_order` 等）—— 就是 §4 表里的
 //!   机器码，[`crate::json::Problem::localized`] 拿它当 `title` 的查表键，每个 code 在
 //!   zh/en 各有一条人类可读消息；
-//! - **1.x 遗留的错误键**（`create_header_fail` 等）—— 只给日志与 `Display` 用，
-//!   不再进响应体；保留是为了日志仍然能区分「创建断点失败」和「写断点失败」。
+//! - **1.x 遗留的错误键**（`write_header_fail` 等）—— 只给日志与 `Display` 用，
+//!   不再进响应体；保留是为了日志仍然能区分「写断点失败」和「读断点失败」。
 //!
 //! 语种由请求参数 `locale` 决定（缺省 `en`），查不到的实现未命中回落 `en`。
 
@@ -76,12 +76,12 @@ pub const MESSAGES: &[(&str, &str, &str)] = &[
     // —— 1.x 遗留键：只进日志 ——
     (
         "upload_error",
-        "错误: 上传发生错误",
+        "错误：上传发生错误",
         "Error: error occurs during upload",
     ),
     (
         "invalid_resource_params",
-        "错误：缺少必要的文件参数",
+        "错误：无效的文件参数",
         "Error: invalid resource parameters",
     ),
     (
@@ -100,19 +100,9 @@ pub const MESSAGES: &[(&str, &str, &str)] = &[
         "Error: fail to create subfolder",
     ),
     (
-        "invalid_chunk_params",
-        "错误：缺少必要的文件块参数",
-        "Error: chunk parameters are invalid",
-    ),
-    (
         "invalid_operation",
         "错误：非法操作",
         "Error: operation is forbidden",
-    ),
-    (
-        "http_post_only",
-        "错误：文件必须通过HTTP POST上传",
-        "Error: upload must through HTTP POST",
     ),
     (
         "create_resource_fail",
@@ -133,11 +123,6 @@ pub const MESSAGES: &[(&str, &str, &str)] = &[
         "rename_resource_fail",
         "错误：重命名文件失败",
         "Error: fail to rename resource",
-    ),
-    (
-        "create_header_fail",
-        "错误：创建头文件失败",
-        "Error: fail to create header",
     ),
     (
         "write_header_fail",
@@ -192,7 +177,11 @@ mod tests {
 
     #[test]
     fn wording_is_frozen() {
-        assert_eq!(translate("upload_error", "zh"), "错误: 上传发生错误");
+        assert_eq!(translate("upload_error", "zh"), "错误：上传发生错误");
+        assert_eq!(
+            translate("invalid_resource_params", "zh"),
+            "错误：无效的文件参数"
+        );
         assert_eq!(
             translate("upload_error", "en"),
             "Error: error occurs during upload"
@@ -244,30 +233,35 @@ mod tests {
         assert_eq!(translate("no_such_key", "zh"), "no_such_key");
     }
 
-    /// 目录与 1.x 翻译文件逐键对账：遗留键一个都不能少（日志还在用）。
+    /// 日志键完整性：`Error::key()` 能返回的每个键都必须有译文 —— 查不到 translate
+    /// 会原样吐键名，日志里就成了裸键。
     #[test]
-    fn catalog_is_complete() {
-        let keys: Vec<&str> = MESSAGES.iter().map(|(key, _, _)| *key).collect();
-        for expected in [
-            "upload_error",
-            "invalid_resource_params",
-            "invalid_resource_size",
-            "invalid_resource_type",
-            "create_subfolder_fail",
-            "invalid_chunk_params",
-            "invalid_operation",
-            "http_post_only",
-            "create_resource_fail",
-            "write_resource_fail",
-            "delete_resource_fail",
-            "rename_resource_fail",
-            "create_header_fail",
-            "write_header_fail",
-            "read_header_fail",
-            "delete_header_fail",
-            "missing_mimetype",
+    fn catalog_covers_every_error_key() {
+        use crate::error::Error;
+
+        for variant in [
+            Error::InvalidResourceParams,
+            Error::InvalidResourceSize,
+            Error::InvalidResourceType,
+            Error::MissingMimetype,
+            Error::InvalidGroup,
+            Error::HashMismatch,
+            Error::InvalidOperation,
+            Error::UploadError,
+            Error::CreateSubfolderFail,
+            Error::CreateResourceFail,
+            Error::WriteResourceFail,
+            Error::RenameResourceFail,
+            Error::DeleteResourceFail,
+            Error::WriteHeaderFail,
+            Error::ReadHeaderFail,
+            Error::DeleteHeaderFail,
+            Error::Backend("x".into()),
+            Error::Io(std::io::Error::other("x")),
         ] {
-            assert!(keys.contains(&expected), "缺少消息键 {expected}");
+            let key = variant.key();
+            assert_ne!(translate(key, "zh"), key, "zh 缺少日志键 {key}");
+            assert_ne!(translate(key, "en"), key, "en 缺少日志键 {key}");
         }
     }
 }

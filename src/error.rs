@@ -36,7 +36,6 @@ pub enum Error {
     WriteResourceFail,
     RenameResourceFail,
     DeleteResourceFail,
-    CreateHeaderFail,
     WriteHeaderFail,
     ReadHeaderFail,
     DeleteHeaderFail,
@@ -64,7 +63,6 @@ impl Error {
             | Self::WriteResourceFail
             | Self::RenameResourceFail
             | Self::DeleteResourceFail
-            | Self::CreateHeaderFail
             | Self::WriteHeaderFail
             | Self::DeleteHeaderFail
             | Self::Backend(_)
@@ -72,7 +70,7 @@ impl Error {
         })
     }
 
-    /// 日志文案的翻译键 —— 比机器码更具体（`create_header_fail` vs `internal_error`）。
+    /// 日志文案的翻译键 —— 比机器码更具体（`write_header_fail` vs `internal_error`）。
     pub fn key(&self) -> &'static str {
         match self {
             Self::InvalidResourceParams => "invalid_resource_params",
@@ -87,7 +85,6 @@ impl Error {
             Self::WriteResourceFail => "write_resource_fail",
             Self::RenameResourceFail => "rename_resource_fail",
             Self::DeleteResourceFail => "delete_resource_fail",
-            Self::CreateHeaderFail => "create_header_fail",
             Self::WriteHeaderFail => "write_header_fail",
             Self::ReadHeaderFail => "read_header_fail",
             Self::DeleteHeaderFail => "delete_header_fail",
