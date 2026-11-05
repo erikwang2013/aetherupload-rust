@@ -157,10 +157,6 @@ impl Guard {
         Self { runtime }
     }
 
-    pub fn runtime(&self) -> &Runtime {
-        &self.runtime
-    }
-
     /// 四条路由的路径与判定表（宿主自己分发时用）。
     pub fn routes(&self) -> GuardRoutes {
         let config = self.runtime.config();

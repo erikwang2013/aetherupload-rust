@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 880" width="900" height="880" role="img"
      aria-labelledby="reqTitleEn reqDescEn"
-     font-family="-apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" fill="#dbe4ff">
+     font-family="'Noto Sans SC', 'Source Han Sans SC', 'WenQuanYi Micro Hei', sans-serif" fill="#dbe4ff">
   <title id="reqTitleEn">Request cycle — what happens on one upload request</title>
   <desc id="reqDescEn">Vertical main line: client POST multipart, routing (Guard::classify or the framework router — four routes), parameter validation, group snapshot Config::resolve_group, then a split: preprocess checks the instant-upload index and creates the .part file with chunkIndex=0 before returning the upload result; save_chunk compares the resume state, checks incremental size, appends and writes back chunkIndex, and on the last chunk checks the whole-file size, the real MIME and the whole-file md5 before renaming into place, writing the instant index and deleting the header file. The right column shows the display / download read paths (s3 presigned 302, X-Accel-Redirect, local streaming, forced attachment for inline types). The bottom bar shows the response shape: 200 with a snake_case upload result on success; a problem response (real status + code) on failure.</desc>
 
@@ -160,5 +160,5 @@
   <text x="60" y="796" font-size="13" font-weight="700">Response shape</text>
   <text x="60" y="818" font-size="12">{ "saved_path": "…" } — 200 + snake_case upload result on success; problem+json (real status + code) on failure</text>
   <!-- 版权角标：全图统一 © erik.xyz -->
-  <text x="884" y="866" text-anchor="end" font-family="-apple-system, 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" fill="#7f8db3" opacity="0.85">© erik.xyz</text>
+  <text x="884" y="866" text-anchor="end" font-family="'Noto Sans SC', 'Source Han Sans SC', 'WenQuanYi Micro Hei', sans-serif" font-size="12" fill="#7f8db3" opacity="0.85">© erik.xyz</text>
 </svg>

@@ -1,6 +1,6 @@
 // Copyright (c) 2026 erik <erik@erik.xyz> — https://erik.xyz
 
-//! Actix Web 集成：一个 [`web::Scope`]，四条路由一次挂好。
+//! Actix Web 集成：一个 `web::Scope`，四条路由一次挂好。
 //!
 //! ```no_run
 //! use std::sync::Arc;

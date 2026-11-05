@@ -60,11 +60,6 @@ impl Resource {
             response_params,
         )
     }
-
-    /// 资源扩展名（小写）。
-    pub fn extension(&self) -> String {
-        crate::util::extension_of(&self.name)
-    }
 }
 
 #[cfg(test)]
@@ -83,7 +78,6 @@ mod tests {
         let resource = Resource::new(&root, "file", "file", "202610", "abc.jpg");
 
         assert!(resource.exists(&storage).unwrap());
-        assert_eq!(resource.extension(), "jpg");
         resource.delete(&storage).unwrap();
         assert!(!resource.exists(&storage).unwrap());
 

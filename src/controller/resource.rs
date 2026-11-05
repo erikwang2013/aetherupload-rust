@@ -108,10 +108,6 @@ impl ResourceController {
         Self { runtime }
     }
 
-    pub fn runtime(&self) -> &Runtime {
-        &self.runtime
-    }
-
     /// 展示资源（内联预览；被拉黑的扩展名会转成附件下载）。
     pub fn display(&self, uri: &str) -> ResourceResponse {
         let resource = match self.locate(uri) {

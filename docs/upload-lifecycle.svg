@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 720" width="900" height="720" role="img"
      aria-labelledby="lifeTitle lifeDesc"
-     font-family="-apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" fill="#dbe4ff">
+     font-family="'Noto Sans SC', 'Source Han Sans SC', 'WenQuanYi Micro Hei', sans-serif" fill="#dbe4ff">
   <title id="lifeTitle">上传生命周期 — 四步主路径与两条旁路</title>
   <desc id="lifeDesc">主路径四个编号节点：1 预处理（校验参数与分组、建空 .part 与 chunkIndex=0、秒传判定）、2 分块循环（断点比对、增量大小校验、追加并回写 chunkIndex）、3 最后一块校验（整份大小、真实 MIME、整份 md5 比对，不一致整份丢弃）、4 落盘（改名 md5 落盘、去重、写秒传索引、删断点文件）。两条旁路：秒传命中在预处理阶段直接返回 saved_path，一个分块都不用传；中断与恢复在报错后不清理 .part 与 _header，客户端重传补齐。右下角是仅在末块校验不通过或 aetherupload clean N 按 mtime 回收时才清理的说明。</desc>
 
@@ -142,5 +142,5 @@
   <text x="130" y="618" font-size="11.5">① 末块校验不通过 → 整份丢弃（.part 与断点文件一起删）</text>
   <text x="130" y="646" font-size="11.5">② aetherupload clean N → 按 mtime 回收过期临时文件（建议每日 cron）</text>
   <!-- 版权角标：全图统一 © erik.xyz -->
-  <text x="884" y="706" text-anchor="end" font-family="-apple-system, 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" fill="#7f8db3" opacity="0.85">© erik.xyz</text>
+  <text x="884" y="706" text-anchor="end" font-family="'Noto Sans SC', 'Source Han Sans SC', 'WenQuanYi Micro Hei', sans-serif" font-size="12" fill="#7f8db3" opacity="0.85">© erik.xyz</text>
 </svg>

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 840" width="900" height="840" role="img"
      aria-labelledby="archTitleEn archDescEn"
-     font-family="-apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" fill="#dbe4ff">
+     font-family="'Noto Sans SC', 'Source Han Sans SC', 'WenQuanYi Micro Hei', sans-serif" fill="#dbe4ff">
   <title id="archTitleEn">Architecture — AetherUpload-Rust: four one-way layers</title>
   <desc id="archDescEn">Four one-way layers, top to bottom: client (aetherupload-all.js does md5, slicing and retry), adapter layer (Axum / Actix Web / Rocket / Poem / Salvo / Warp / bee-rust / e-cat plus native Rust Guard — wiring only), use-case layer (UploadController and ResourceController), domain layer (PartialResource / Header / Resource / SavedPath / MimeType / Config), and a dashed ports layer (Storage / InstantStore / EventSink / MimeDetector — trait-injected, optional). At the bottom: the three kinds of files on disk, plus optional Redis and S3. The left arrow shows the dependency direction, top to bottom.</desc>
 
@@ -153,5 +153,5 @@
   <text x="696" y="765" font-size="10.5" fill="#7f8db3">finished files off-box</text>
   <text x="696" y="790" font-size="10.5" fill="#7f8db3">read: 302 → presigned URL</text>
   <!-- 版权角标：全图统一 © erik.xyz -->
-  <text x="884" y="826" text-anchor="end" font-family="-apple-system, 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" fill="#7f8db3" opacity="0.85">© erik.xyz</text>
+  <text x="884" y="826" text-anchor="end" font-family="'Noto Sans SC', 'Source Han Sans SC', 'WenQuanYi Micro Hei', sans-serif" font-size="12" fill="#7f8db3" opacity="0.85">© erik.xyz</text>
 </svg>

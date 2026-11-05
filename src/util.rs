@@ -16,23 +16,35 @@ use crate::config::SubdirRule;
 /// 生成临时资源基础名：8 字节随机数 → 16 个小写十六进制字符（1.x 既有断点文件
 /// 沿用的命名形态）。
 ///
-/// 熵源是操作系统 CSPRNG（`/dev/urandom`）；读不到时退化为「时间 ^ pid」种子的
-/// splitmix64 —— 名字只在 `_header`/`.part` 内部使用，且始终带内容 md5 兜底，
-/// 退化路径只影响不可猜性，不影响正确性。
+/// 熵源是操作系统 CSPRNG（`/dev/urandom`）；读不到时（Windows 没有这个路径）用标准库
+/// `RandomState`（OS 随机种子）混入时间与 pid 作为 splitmix64 的种子 —— 名字只在
+/// `_header`/`.part` 内部使用，且始终带内容 md5 兜底，退化路径只影响不可猜性，
+/// 不影响正确性。
 pub fn generate_temp_name() -> String {
     let mut bytes = [0u8; 8];
 
     if !fill_random(&mut bytes) {
-        let seed = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0)
-            ^ (std::process::id() as u64).rotate_left(32);
-
-        bytes.copy_from_slice(&splitmix64(seed).to_le_bytes());
+        bytes.copy_from_slice(&splitmix64(entropy_seed()).to_le_bytes());
     }
 
     to_hex(&bytes)
+}
+
+/// 退化路径的种子：`RandomState` 的每实例随机键由 OS 熵播种，混入时间与 pid 后
+/// 不再是「时间 ^ pid」这种可预测值。
+fn entropy_seed() -> u64 {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+
+    let mut hasher = RandomState::new().build_hasher();
+    hasher.write_u128(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0),
+    );
+    hasher.write_u32(std::process::id());
+    hasher.finish()
 }
 
 fn fill_random(buf: &mut [u8]) -> bool {
@@ -133,18 +145,6 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
 
     (if m <= 2 { y + 1 } else { y }, m, d)
-}
-
-/// 展示链接：`route_display + '/' + saved_path`（拼接形态与 1.x 既有部署一致）。
-pub fn display_link(route_display: &str, saved_path: &str) -> String {
-    format!("{route_display}/{saved_path}")
-}
-
-/// 下载链接：`route_download + '/' + saved_path + '/' + new_name`。
-///
-/// `new_name` 已经过消毒（见 [`sanitize_download_name`]），这里只做拼接。
-pub fn download_link(route_download: &str, saved_path: &str, new_name: &str) -> String {
-    format!("{route_download}/{saved_path}/{new_name}")
 }
 
 /// 下载名消毒：控制字符、DEL、双引号、反斜杠、斜杠一律替换为 `_`，防头注入与
@@ -249,17 +249,5 @@ mod tests {
         assert_eq!(sanitize_download_name("a\"b\\c/d"), "a_b_c_d");
         assert_eq!(sanitize_download_name("正常名称.pdf"), "正常名称.pdf");
         assert_eq!(sanitize_download_name("bad\nname"), "bad_name");
-    }
-
-    #[test]
-    fn links() {
-        assert_eq!(
-            display_link("/aetherupload/display", "file_202610_x.jpg"),
-            "/aetherupload/display/file_202610_x.jpg"
-        );
-        assert_eq!(
-            download_link("/aetherupload/download", "file_202610_x.jpg", "报告.pdf"),
-            "/aetherupload/download/file_202610_x.jpg/报告.pdf"
-        );
     }
 }

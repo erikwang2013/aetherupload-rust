@@ -117,10 +117,6 @@ impl UploadController {
         Self { runtime }
     }
 
-    pub fn runtime(&self) -> &Runtime {
-        &self.runtime
-    }
-
     /// 预处理：校验参数与分组 → 生成临时名 → 判定秒传 → 建 `.part` 与断点文件。
     pub fn preprocess(
         &self,

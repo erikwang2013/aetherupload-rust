@@ -8,7 +8,7 @@
 //! 改名落地。
 
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::config::GroupSnapshot;
@@ -108,10 +108,6 @@ impl PartialResource {
         written.map(|_| ())
     }
 
-    pub fn delete(&self) -> Result<()> {
-        std::fs::remove_file(&self.path).map_err(|_| Error::DeleteResourceFail)
-    }
-
     /// 清理：临时文件与断点文件一起删，**错误全部忽略** ——
     /// 它出现在失败路径上，清理失败不应掩盖原始失败原因。
     pub fn cleanup(&self) {
@@ -132,16 +128,6 @@ impl PartialResource {
         )
     }
 
-    /// 声明大小校验：`0` 一律拒绝（客户端没算出大小或算错了），
-    /// 超过分组上限（上限非 0 时）也拒绝。
-    pub fn filter_by_size(&self, resource_size: u64) -> Result<()> {
-        if resource_size == 0 || (self.max_size != 0 && resource_size > self.max_size) {
-            return Err(Error::InvalidResourceSize);
-        }
-
-        Ok(())
-    }
-
     /// 扩展名校验：空扩展名拒绝；白名单非空时必须在白名单内；
     /// 命中黑名单一律拒绝。
     pub fn filter_by_extension(&self, resource_ext: &str) -> Result<()> {
@@ -154,15 +140,6 @@ impl PartialResource {
         }
 
         Ok(())
-    }
-
-    /// 落盘后的真实大小校验（末块第一步）。
-    pub fn check_size(&self) -> Result<()> {
-        let size = std::fs::metadata(&self.path)
-            .map_err(|_| Error::UploadError)?
-            .len();
-
-        self.filter_by_size(size)
     }
 
     /// 内容类型复核（末块第二步）：按**真实内容**反查扩展名，再走一遍白/黑名单。
@@ -200,27 +177,12 @@ impl PartialResource {
         md5::md5_file(&self.path).map_err(Error::Io)
     }
 
-    /// 读取头部若干字节（测试与诊断用）。
-    pub fn read_prefix(&self, limit: usize) -> Result<Vec<u8>> {
-        let mut buf = vec![0u8; limit];
-        let mut file = File::open(&self.path).map_err(|_| Error::UploadError)?;
-        let read = file.read(&mut buf).map_err(|_| Error::UploadError)?;
-        buf.truncate(read);
-
-        Ok(buf)
-    }
-
     /// 分组子目录的绝对路径（`<root>/<group_dir>/<subdir>`）。
     pub fn group_sub_dir_path(&self) -> PathBuf {
         self.path
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| self.path.clone())
-    }
-
-    /// 子目录下的成品路径（改名前的目标位置）。
-    pub fn complete_path(&self, name: &str) -> PathBuf {
-        self.group_sub_dir_path().join(name)
     }
 
     /// 建分组子目录 —— 三条语义：
@@ -323,20 +285,9 @@ mod tests {
     }
 
     #[test]
-    fn size_and_extension_filters() {
+    fn extension_filters() {
         let (root, snapshot) = setup("filters");
         let partial = PartialResource::new(&root, &snapshot, "0123456789abcdef", "jpg", "202610");
-
-        // 0 一律拒；超过分组上限拒；上限内放行
-        assert!(matches!(
-            partial.filter_by_size(0),
-            Err(Error::InvalidResourceSize)
-        ));
-        assert!(matches!(
-            partial.filter_by_size(snapshot.resource_maxsize + 1),
-            Err(Error::InvalidResourceSize)
-        ));
-        partial.filter_by_size(1024).unwrap();
 
         // 白名单内放行；白名单外拒；黑名单拒；空扩展名拒
         partial.filter_by_extension("jpg").unwrap();
@@ -401,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn hash_and_complete_path() {
+    fn hash_matches_the_rfc_vector() {
         let (root, snapshot) = setup("hash");
         let partial = PartialResource::new(&root, &snapshot, "0123456789abcdef", "txt", "202610");
         partial.create().unwrap();
@@ -411,11 +362,6 @@ mod tests {
         assert_eq!(
             partial.calculate_hash().unwrap(),
             "900150983cd24fb0d6963f7d28e17f72"
-        );
-        assert!(
-            partial
-                .complete_path("x.txt")
-                .ends_with("file/202610/x.txt")
         );
 
         let _ = std::fs::remove_dir_all(&root);

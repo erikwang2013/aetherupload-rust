@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 880" width="900" height="880" role="img"
      aria-labelledby="reqTitle reqDesc"
-     font-family="-apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" fill="#dbe4ff">
+     font-family="'Noto Sans SC', 'Source Han Sans SC', 'WenQuanYi Micro Hei', sans-serif" fill="#dbe4ff">
   <title id="reqTitle">请求周期 — 一次上传请求走哪几步</title>
   <desc id="reqDesc">纵向主线：客户端 POST multipart → 路由分发（Guard::classify 或框架路由，四条路由）→ 参数校验 → 分组快照 Config::resolve_group → 分成两支：preprocess 做秒传判定并建 .part 与 chunkIndex=0 后返回上传结果；save_chunk 走断点比对、增量大小校验、追加、回写 chunkIndex，末块做大小、真实 MIME、整份 md5 校验后改名落盘、写秒传、删断点。右侧一列是 display / download 的读路径（s3 预签名 302、X-Accel-Redirect、本地流式，内联类型强制附件）。底部是响应形态：成功 200 + snake_case 上传结果，失败是问题响应（真实状态码 + code）。</desc>
 
@@ -160,5 +160,5 @@
   <text x="60" y="796" font-size="13" font-weight="700">响应形态</text>
   <text x="60" y="818" font-size="12">{ "saved_path": "…" } —— 成功 200 + snake_case 上传结果；失败 = 问题响应（真实状态码 + code）</text>
   <!-- 版权角标：全图统一 © erik.xyz -->
-  <text x="884" y="866" text-anchor="end" font-family="-apple-system, 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" fill="#7f8db3" opacity="0.85">© erik.xyz</text>
+  <text x="884" y="866" text-anchor="end" font-family="'Noto Sans SC', 'Source Han Sans SC', 'WenQuanYi Micro Hei', sans-serif" font-size="12" fill="#7f8db3" opacity="0.85">© erik.xyz</text>
 </svg>

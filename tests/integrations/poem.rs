@@ -468,3 +468,38 @@ async fn urlencoded_preprocess_matches_the_bundled_frontend() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// poem 没有框架层 body 上限：handler 必须自己按 `body_limit` 拒掉超大请求体。
+/// `chunk_size = 0` 把上限压到固定的 1MB 余量，测试不必造 2MB 数据。
+#[tokio::test]
+async fn oversized_body_is_413() {
+    let (root, _) = setup("limit");
+    let runtime = Arc::new(
+        Runtime::new(
+            Config {
+                chunk_size: 0,
+                ..Config::default()
+            },
+            &root,
+        )
+        .unwrap(),
+    );
+    let preprocess_path = runtime.config().route_preprocess.clone();
+
+    let client = TestClient::new(routes(runtime));
+
+    let response = client
+        .post(&preprocess_path)
+        .multipart(TestForm::new().text("pad", "x".repeat(1_048_577)))
+        .send()
+        .await;
+
+    assert_problem(
+        response,
+        poem::http::StatusCode::PAYLOAD_TOO_LARGE,
+        "payload_too_large",
+    )
+    .await;
+
+    let _ = std::fs::remove_dir_all(&root);
+}

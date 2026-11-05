@@ -8,11 +8,11 @@
 //! 响应形态（2.0 协议）：两个上传入口成功是 200 + `application/json`（snake_case
 //! 上传结果），失败是 RFC 9457 问题响应 —— 内核的 `Problem` 状态码与文案原样透出。
 //! 本适配器自己判定的失败也回同一形态：坏 multipart / 坏 urlencoded / 缺
-//! `Content-Type` → 400 `invalid_request_body`；定位到文件但打开失败 → 404
-//! `resource_not_found`。（poem 对请求体没有默认上限，这里不存在框架层 413。）
+//! `Content-Type` → 400 `invalid_request_body`；超过 [`body_limit`] → 413
+//! `payload_too_large`；定位到文件但打开失败 → 404 `resource_not_found`。
 //!
 //! `preprocess` 的两种表单编码都收：urlencoded（1.x 既有部署的编码）与 multipart
-//! （自带脚本与手工构造的请求）；两条分支都受下一节的 `SizeLimit` 建议约束。
+//! （自带脚本与手工构造的请求）；两条分支都受 handler 内的 `body_limit` 约束。
 //!
 //! 本地文件下发用流式响应（`tokio::fs` + `ReaderStream`），不把整份文件读进内存；
 //! **不实现 HTTP Range** —— 与 1.x 一致，需要断点下载/视频拖动请开
@@ -23,18 +23,10 @@
 //! **路径参数语法**：config 里的 `route_display` / `route_download` 是 axum 风格的
 //! `{saved_path}`，poem 用的是 `:saved_path`，[`routes`] 里统一改写。
 //!
-//! **请求体上限**：poem 3 对请求体**没有默认上限**（axum 的 `DefaultBodyLimit` 是
-//! 2MB，actix 是 256KB，poem 没有对应物），所以这里不存在「放开」这一步 ——
-//! 一次分块原样收下。需要显式设限时，用 poem 自带的 `SizeLimit` 中间件挂在
-//! **两条 POST 路由**上（它要求请求带 `Content-Length`，否则回 411）：
-//!
-//! ```text
-//! let limit = aetherupload::integrations::body_limit(&runtime);
-//! Route::new()
-//!     .at(&preprocess_path, post(preprocess).with(SizeLimit::new(limit)))
-//!     .at(&uploading_path,  post(save_chunk).with(SizeLimit::new(limit)))
-//!     // …display / download 不带上限：GET 没有请求体，挂了会一律 411
-//! ```
+//! **请求体上限**：poem 3 对请求体没有默认上限（axum 的 `DefaultBodyLimit` 是
+//! 2MB，actix 是 256KB，poem 没有对应物），所以两条 POST 路由在 handler 里用
+//! `Body::into_bytes_limit(body_limit(runtime))` 自己限量。不要改用 poem 的
+//! `SizeLimit` 中间件：它要求请求必须带 `Content-Length`，chunked 客户端会被 411。
 //!
 //! ```no_run
 //! use std::sync::Arc;
@@ -48,6 +40,7 @@
 
 use std::sync::Arc;
 
+use poem::error::ReadBodyError;
 use poem::http::{StatusCode, header};
 use poem::web::{Data, Multipart, Path, RequestBody};
 use poem::{Body, EndpointExt, FromRequest, Request, Response, Route, get, handler, post};
@@ -55,8 +48,9 @@ use tokio_util::io::ReaderStream;
 
 use crate::controller::{ChunkBody, ResourceController, ResourceResponse, UploadController};
 use crate::integrations::{
-    FormData, ParseFailure, display_route, download_route, invalid_request_body_response,
-    is_urlencoded, ok_response, problem_response, resource_not_found_response,
+    FormData, ParseFailure, body_limit, display_route, download_route,
+    invalid_request_body_response, is_urlencoded, ok_response, payload_too_large_response,
+    problem_response, resource_not_found_response,
 };
 use crate::json::{save_chunk_ok_to_json, upload_ok_to_json};
 use crate::runtime::Runtime;
@@ -79,6 +73,16 @@ pub fn routes(runtime: Arc<Runtime>) -> Route {
 
 #[handler]
 async fn preprocess(Data(runtime): Data<&Arc<Runtime>>, req: &Request, body: Body) -> Response {
+    // poem 没有框架层 body 上限，先按 body_limit 收下整条请求体
+    let bytes = match body.into_bytes_limit(body_limit(runtime)).await {
+        Ok(bytes) => bytes,
+        Err(ReadBodyError::PayloadTooLarge) => {
+            return json_response(payload_too_large_response(None));
+        }
+        // 请求体读失败（连接中断等）：按坏体回问题响应
+        Err(_) => return json_response(invalid_request_body_response(None)),
+    };
+
     // 按 `Content-Type` 分流：1.x 客户端发 urlencoded，自带脚本与手工请求发 multipart
     let urlencoded = req
         .headers()
@@ -87,13 +91,9 @@ async fn preprocess(Data(runtime): Data<&Arc<Runtime>>, req: &Request, body: Bod
         .is_some_and(is_urlencoded);
 
     let form = if urlencoded {
-        match body.into_vec().await {
-            Ok(bytes) => FormData::from_urlencoded(&String::from_utf8_lossy(&bytes)),
-            // 请求体读失败（连接中断等）：按坏体回问题响应
-            Err(_) => return json_response(ParseFailure::new(FormData::new(), false).response()),
-        }
+        FormData::from_urlencoded(&String::from_utf8_lossy(&bytes))
     } else {
-        let mut body = RequestBody::new(body);
+        let mut body = RequestBody::new(Body::from(bytes));
 
         match Multipart::from_request(req, &mut body).await {
             Ok(multipart) => match parse_multipart(multipart).await {
@@ -116,8 +116,16 @@ async fn preprocess(Data(runtime): Data<&Arc<Runtime>>, req: &Request, body: Bod
 
 #[handler]
 async fn save_chunk(Data(runtime): Data<&Arc<Runtime>>, req: &Request, body: Body) -> Response {
+    let bytes = match body.into_bytes_limit(body_limit(runtime)).await {
+        Ok(bytes) => bytes,
+        Err(ReadBodyError::PayloadTooLarge) => {
+            return json_response(payload_too_large_response(None));
+        }
+        Err(_) => return json_response(invalid_request_body_response(None)),
+    };
+
     // 分块路由只可能是 multipart；提取失败同样回问题响应（不落回 poem 的纯文本拒绝）
-    let mut body = RequestBody::new(body);
+    let mut body = RequestBody::new(Body::from(bytes));
 
     let form = match Multipart::from_request(req, &mut body).await {
         Ok(multipart) => match parse_multipart(multipart).await {

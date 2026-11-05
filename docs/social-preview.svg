@@ -75,7 +75,7 @@
   </g>
 
   <!-- 文字区 -->
-  <g font-family="-apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif">
+  <g font-family="'Noto Sans SC', 'Source Han Sans SC', 'WenQuanYi Micro Hei', sans-serif">
     <text x="540" y="252" font-size="62" font-weight="700" fill="#eaf1ff">aetherupload-rust</text>
     <text x="540" y="300" font-size="26" fill="#8fe6ff">AetherUpload for Rust · 大文件分块上传</text>
 

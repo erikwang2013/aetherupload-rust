@@ -24,10 +24,9 @@ pub struct RespClient {
 impl RespClient {
     /// 解析 `redis://[:password@]host:port[/db]` 并建立连接。
     pub fn connect(url: &str) -> Result<Self> {
+        // 不回显 url：它可能带着密码，错误消息会进终端/日志
         let rest = url.strip_prefix("redis://").ok_or_else(|| {
-            Error::Backend(format!(
-                "不认识的 Redis 地址：{url}（应形如 redis://127.0.0.1:6379/0）"
-            ))
+            Error::Backend("不认识的 Redis 地址（应形如 redis://127.0.0.1:6379/0）".to_string())
         })?;
 
         let (auth, rest) = match rest.split_once('@') {

@@ -219,7 +219,8 @@ fn run_clean_up(runtime: &Runtime, write: &mut dyn FnMut(&str), days: i64) -> Re
         format!("Start deleting partial files created {days} days ago..."),
     );
 
-    let due = std::time::SystemTime::now() - std::time::Duration::from_secs(days as u64 * 86_400);
+    let due = std::time::SystemTime::now()
+        - std::time::Duration::from_secs((days as u64).saturating_mul(86_400));
 
     // 断点文件：`_header` 下**没有扩展名**的文件（断点名是纯 16 位十六进制，不含点）
     let header_dir = runtime.upload_root().join(crate::header::HEADER_DIR);

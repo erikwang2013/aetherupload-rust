@@ -219,7 +219,7 @@ fn probe_text(head: &[u8]) -> Option<&str> {
 
 /// 纯函数：从字节头部判断 MIME（便于单测，不需要真文件）。
 ///
-/// 返回的类型都保证能在 [`table`] 里反查到扩展名，否则末块的内容校验只能报
+/// 返回的类型都保证能在 `table` 里反查到扩展名，否则末块的内容校验只能报
 /// `missing_mimetype`，而给不出可用扩展名。
 pub fn detect_bytes(head: &[u8]) -> Option<String> {
     let hit = |mime: &str| Some(mime.to_string());

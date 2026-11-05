@@ -22,7 +22,7 @@
 //! 一次分块会被它先拒掉；这里用 `form_data_max_size(body_limit(&runtime))` 放开到
 //! 「一个分块 + 1MB 的 multipart 头部余量」。
 //!
-//! runtime 通过一个 hoop（[`InjectRuntime`]）注入 [`Depot`] —— salvo 没有 axum
+//! runtime 通过一个 hoop（`InjectRuntime`）注入 [`Depot`] —— salvo 没有 axum
 //! `State` 那样的提取器，hoop + `depot.get_typed()` 是它的等价做法。
 //!
 //! ```no_run

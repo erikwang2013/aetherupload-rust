@@ -5,7 +5,7 @@
 //! 键分两类：
 //!
 //! - **2.0 的 code**（`invalid_parameter`、`chunk_out_of_order` 等）—— 就是 §4 表里的
-//!   机器码，[`crate::json::Problem::localized`] 拿它当 `title` 的查表键，每个 code 在
+//!   机器码，`crate::json::Problem::localized` 拿它当 `title` 的查表键，每个 code 在
 //!   zh/en 各有一条人类可读消息；
 //! - **1.x 遗留的错误键**（`write_header_fail` 等）—— 只给日志与 `Display` 用，
 //!   不再进响应体；保留是为了日志仍然能区分「写断点失败」和「读断点失败」。

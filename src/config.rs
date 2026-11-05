@@ -48,7 +48,7 @@ pub enum StorageDriver {
 }
 
 /// S3 驱动配置（对应 `storage.s3`）。字段名沿用 1.x 既有部署。
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct S3Config {
     /// 留空 = AWS 默认（按 region 推导）；自托管填自家端点。
     pub endpoint: String,
@@ -79,6 +79,23 @@ impl Default for S3Config {
             multipart_threshold: 104_857_600,
             payload_signing: PayloadSigning::Hash,
         }
+    }
+}
+
+/// 手写 `Debug`：`Config` 会派生 `Debug`，默认实现会把 `secret_key` 带进日志。
+impl std::fmt::Debug for S3Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("S3Config")
+            .field("endpoint", &self.endpoint)
+            .field("region", &self.region)
+            .field("bucket", &self.bucket)
+            .field("access_key", &self.access_key)
+            .field("secret_key", &"***")
+            .field("path_style", &self.path_style)
+            .field("prefix", &self.prefix)
+            .field("multipart_threshold", &self.multipart_threshold)
+            .field("payload_signing", &self.payload_signing)
+            .finish()
     }
 }
 
@@ -221,11 +238,6 @@ impl Config {
             extra_mime_types: self.extra_mime_types.clone(),
         })
     }
-
-    /// 便捷判断：驱动是否为 s3（适配器与控制器用它决定读路径）。
-    pub fn is_s3(&self) -> bool {
-        self.storage.driver == StorageDriver::S3
-    }
 }
 
 /// 一次调用（一个请求）的配置快照：分组配置 + 相关全局项。
@@ -318,5 +330,15 @@ mod tests {
         assert_eq!(SubdirRule::parse("const"), SubdirRule::Const);
         assert_eq!(SubdirRule::parse("month"), SubdirRule::Month);
         assert_eq!(SubdirRule::parse("whatever"), SubdirRule::Month);
+    }
+
+    #[test]
+    fn debug_never_prints_the_s3_secret() {
+        let mut config = Config::default();
+        config.storage.s3.secret_key = "super-secret-key".to_string();
+
+        let rendered = format!("{config:?}");
+        assert!(!rendered.contains("super-secret-key"));
+        assert!(rendered.contains("secret_key: \"***\""));
     }
 }

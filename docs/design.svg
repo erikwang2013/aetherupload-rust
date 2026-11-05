@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 640" width="900" height="640" role="img"
      aria-labelledby="designTitle designDesc"
-     font-family="-apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" fill="#dbe4ff">
+     font-family="'Noto Sans SC', 'Source Han Sans SC', 'WenQuanYi Micro Hei', sans-serif" fill="#dbe4ff">
   <title id="designTitle">功能设计 — 一套机制解决三个难题</title>
   <desc id="designDesc">上半：三个难题并列（超过服务端请求体上限就传不上去、网络一断从头再来、同样的文件被反复传输）。中间：三个难题汇入同一个核心机制 —— 浏览器切片、逐块追加到临时文件、落盘时用内容 md5 命名。下半：上传、断线续传、秒传、去重、完整性校验五个能力从同一机制长出。右侧竖排三条设计约束：不把整份文件读进内存；不为「文件在哪」建表；Redis 与 S3 皆可选。</desc>
 
@@ -131,5 +131,5 @@
   <text x="702" y="540" font-size="11" fill="#7f8db3">末块比对整份 md5</text>
   <text x="702" y="558" font-size="11" fill="#7f8db3">不一致整份丢弃</text>
   <!-- 版权角标：全图统一 © erik.xyz -->
-  <text x="884" y="626" text-anchor="end" font-family="-apple-system, 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" fill="#7f8db3" opacity="0.85">© erik.xyz</text>
+  <text x="884" y="626" text-anchor="end" font-family="'Noto Sans SC', 'Source Han Sans SC', 'WenQuanYi Micro Hei', sans-serif" font-size="12" fill="#7f8db3" opacity="0.85">© erik.xyz</text>
 </svg>

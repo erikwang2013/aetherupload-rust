@@ -10,7 +10,7 @@
 //! 语义拆开**：要么换成语义唯一的变体，要么直接构造对应的 [`Problem`] —— 不许在映射
 //! 层用一个 code 糊过去。真漏了映射也只给 500 `internal_error`，绝不猜成 4xx。
 //!
-//! 面向客户端的文案由 [`Problem::localized`] 按请求语种渲染；`Display` 固定中文，
+//! 面向客户端的文案由 `Problem::localized` 按请求语种渲染；`Display` 固定中文，
 //! 供日志与 `?` 传播时阅读。
 
 use std::fmt;

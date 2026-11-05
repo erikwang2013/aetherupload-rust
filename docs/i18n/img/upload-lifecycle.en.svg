@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 720" width="900" height="720" role="img"
      aria-labelledby="lifeTitleEn lifeDescEn"
-     font-family="-apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" fill="#dbe4ff">
+     font-family="'Noto Sans SC', 'Source Han Sans SC', 'WenQuanYi Micro Hei', sans-serif" fill="#dbe4ff">
   <title id="lifeTitleEn">Upload lifecycle — a four-step main path with two bypasses</title>
   <desc id="lifeDescEn">Main path, four numbered nodes: 1 Preprocess (validate params and group, create the empty .part file with chunkIndex=0, check the instant-upload index), 2 Chunking loop (compare the resume state, incremental size check, append and write back chunkIndex), 3 Last-chunk checks (whole-file size, real MIME, whole-file md5 — on mismatch the whole upload is dropped), 4 Publish (rename to md5, dedup, write the instant index, delete the header file). Two bypasses: an instant-upload hit returns saved_path during preprocess without sending any chunk; an interruption returns an error but never cleans .part or the header, so the client re-sends the gap. The bottom bar explains when cleanup does happen: failed last-chunk validation, or aetherupload clean N reclaiming stale temp files by mtime.</desc>
 
@@ -149,5 +149,5 @@
   <text x="130" y="618" font-size="11.5">1. Last-chunk validation fails → the whole upload is dropped (.part and header removed together)</text>
   <text x="130" y="646" font-size="11.5">2. aetherupload clean N → reclaim stale temp files by mtime (suggested as a daily cron)</text>
   <!-- 版权角标：全图统一 © erik.xyz -->
-  <text x="884" y="706" text-anchor="end" font-family="-apple-system, 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" fill="#7f8db3" opacity="0.85">© erik.xyz</text>
+  <text x="884" y="706" text-anchor="end" font-family="'Noto Sans SC', 'Source Han Sans SC', 'WenQuanYi Micro Hei', sans-serif" font-size="12" fill="#7f8db3" opacity="0.85">© erik.xyz</text>
 </svg>

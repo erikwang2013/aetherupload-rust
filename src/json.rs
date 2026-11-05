@@ -25,7 +25,7 @@ pub struct Problem {
 }
 
 impl Problem {
-    /// 显式构造：`title` 由调用方给。内核代码走 [`Problem::localized`] 一族，
+    /// 显式构造：`title` 由调用方给。内核代码走 `Problem::localized` 一族，
     /// 文案只在查 i18n 表的那一处产生。
     pub fn new(
         status: u16,

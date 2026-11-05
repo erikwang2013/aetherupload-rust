@@ -2,7 +2,7 @@
 
 [package]
 name = "aetherupload-rust"
-version = "3.0.1"
+version = "4.0.0"
 edition = "2024"
 rust-version = "1.89"
 description = "AetherUpload for Rust：前端切片、后端追加落盘 —— 上传 / 断线续传 / 秒传 / 去重 / 完整性校验共用同一套机制；内核与宿主框架解耦（原生 Guard + Axum、Actix Web、Rocket、Poem、Salvo、Warp、bee-rust、e-cat），默认 feature 零第三方依赖"
@@ -80,10 +80,12 @@ hmac = { version = "0.12", optional = true }
 tokio = { version = "1.53", features = ["macros", "rt-multi-thread"] }
 axum = "0.8.9"
 tower = { version = "0.5.3", features = ["util"] }
-actix-web = "4.15"
-rocket = "0.5.1"
+# 测试只用到框架的测试工具，不重复打开运行时的默认 feature（尤其 http2 / 压缩）：
+# 默认 feature 会把 h2 0.3（RUSTSEC-2026-0258，0.3 线无修复）拉进 dev 依赖。
+actix-web = { version = "4.15", default-features = false, features = ["macros"] }
+rocket = { version = "0.5.1", default-features = false }
 poem = { version = "3.1.12", features = ["test"] }
-salvo = { version = "1.0.1", features = ["test"] }
+salvo = { version = "1.0.1", default-features = false, features = ["test"] }
 warp = { version = "0.4.3", features = ["test"] }
 bee_router = "1.2.3"
 bee_cache = "1.2.3"

@@ -21,7 +21,7 @@ use crate::error::Result;
 #[cfg(not(feature = "s3"))]
 use crate::error::Error;
 use crate::events::{EventSink, NoopEvents};
-use crate::instant::{EXPIRE_SECONDS, InstantIndex, InstantStore, NullInstantStore};
+use crate::instant::{InstantIndex, InstantStore, NullInstantStore};
 use crate::mime::{MagicBytesDetector, MimeDetector};
 use crate::resource::Resource;
 use crate::saved_path::SavedPath;
@@ -42,7 +42,7 @@ impl Runtime {
     /// 按配置装配运行时。
     ///
     /// `base_path` 是宿主项目根；上传根目录即 `base_path/root_dir`。
-    /// 返回 [`Error::Backend`] 的唯一情形是存储驱动配置不可用
+    /// 返回 [`crate::error::Error::Backend`] 的唯一情形是存储驱动配置不可用
     /// （`driver = s3` 但没开 `s3` feature）—— 校验放在构造期而不是
     /// 请求期，选择「大声失败」而不是悄悄回落 local。
     pub fn new(config: Config, base_path: impl Into<PathBuf>) -> Result<Self> {
@@ -117,16 +117,6 @@ impl Runtime {
     /// 秒传索引门面（TTL 取 `resource_redis_expire`）。
     pub fn instant_index(&self) -> InstantIndex<'_> {
         InstantIndex::new(self.instant.as_ref(), self.config.resource_redis_expire)
-    }
-
-    /// 指定 TTL 构造（默认走 `resource_redis_expire`；这个出口给需要自定义过期的调用方）。
-    pub fn instant_index_with_ttl(&self, ttl_seconds: u64) -> InstantIndex<'_> {
-        InstantIndex::new(self.instant.as_ref(), ttl_seconds)
-    }
-
-    /// 默认 TTL（7 天，[`EXPIRE_SECONDS`]）常量透出。
-    pub fn default_instant_ttl() -> u64 {
-        EXPIRE_SECONDS
     }
 
     // —— 资源寻址与删除 ——
